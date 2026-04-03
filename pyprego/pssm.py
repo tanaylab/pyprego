@@ -391,10 +391,7 @@ def _max_pssm_score(
     # Normalize shorter PSSM with prior
     vec_s = _normalize_with_prior(pssm_s, prior).ravel()
 
-    if method == "kl":
-        best_score = np.inf
-    else:
-        best_score = -1.0
+    best_score = np.inf if method == "kl" else -1.0
 
     for start in range(max_pos - window_size + 1):
         window = pssm_l[start : start + window_size]
@@ -509,10 +506,7 @@ def _pssm_dataset_score(
     if pssm_dict2 is None:
         # Within-set comparison
         n = len(mats1)
-        if method == "kl":
-            result = np.zeros((n, n), dtype=np.float64)
-        else:
-            result = np.zeros((n, n), dtype=np.float64)
+        result = np.zeros((n, n), dtype=np.float64) if method == "kl" else np.zeros((n, n), dtype=np.float64)
         for i in range(n):
             if method == "kl":
                 result[i, i] = 0.0
@@ -523,16 +517,15 @@ def _pssm_dataset_score(
                 result[i, j] = s
                 result[j, i] = s
         return result
-    else:
-        names2 = list(pssm_dict2.keys())
-        mats2 = [pssm_dict2[n] for n in names2]
-        n1 = len(mats1)
-        n2 = len(mats2)
-        result = np.zeros((n1, n2), dtype=np.float64)
-        for i in range(n1):
-            for j in range(n2):
-                result[i, j] = _max_pssm_score(mats1[i], mats2[j], method=method, prior=prior)
-        return result
+    names2 = list(pssm_dict2.keys())
+    mats2 = [pssm_dict2[n] for n in names2]
+    n1 = len(mats1)
+    n2 = len(mats2)
+    result = np.zeros((n1, n2), dtype=np.float64)
+    for i in range(n1):
+        for j in range(n2):
+            result[i, j] = _max_pssm_score(mats1[i], mats2[j], method=method, prior=prior)
+    return result
 
 
 def _dataset_df_to_dict(dataset: pd.DataFrame) -> dict[str, np.ndarray]:
@@ -580,11 +573,10 @@ def pssm_dataset_cor(
     if dataset2 is None:
         score_mat = _pssm_dataset_score(dict1, method=method, prior=prior)
         return pd.DataFrame(score_mat, index=names1, columns=names1)
-    else:
-        dict2 = _dataset_df_to_dict(dataset2)
-        names2 = list(dict2.keys())
-        score_mat = _pssm_dataset_score(dict1, dict2, method=method, prior=prior)
-        return pd.DataFrame(score_mat, index=names1, columns=names2)
+    dict2 = _dataset_df_to_dict(dataset2)
+    names2 = list(dict2.keys())
+    score_mat = _pssm_dataset_score(dict1, dict2, method=method, prior=prior)
+    return pd.DataFrame(score_mat, index=names1, columns=names2)
 
 
 def pssm_dataset_diff(
@@ -614,11 +606,10 @@ def pssm_dataset_diff(
     if dataset2 is None:
         score_mat = _pssm_dataset_score(dict1, method="kl", prior=prior)
         return pd.DataFrame(score_mat, index=names1, columns=names1)
-    else:
-        dict2 = _dataset_df_to_dict(dataset2)
-        names2 = list(dict2.keys())
-        score_mat = _pssm_dataset_score(dict1, dict2, method="kl", prior=prior)
-        return pd.DataFrame(score_mat, index=names1, columns=names2)
+    dict2 = _dataset_df_to_dict(dataset2)
+    names2 = list(dict2.keys())
+    score_mat = _pssm_dataset_score(dict1, dict2, method="kl", prior=prior)
+    return pd.DataFrame(score_mat, index=names1, columns=names2)
 
 
 # ---------------------------------------------------------------------------

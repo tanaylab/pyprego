@@ -25,9 +25,7 @@ def _require_pymisha():
     try:
         import pymisha  # noqa: F401
     except ImportError as exc:
-        raise ImportError(
-            "The genomic module requires pymisha. Install it with: pip install pymisha"
-        ) from exc
+        raise ImportError("The genomic module requires pymisha. Install it with: pip install pymisha") from exc
 
 
 def _normalize_intervals(intervals: pd.DataFrame, size: int) -> pd.DataFrame:
@@ -134,9 +132,7 @@ def gextract_pwm(
     from .compute import compute_pwm
 
     sequences = intervals_to_seq(intervals, size=size)
-    return compute_pwm(
-        sequences, pssm, spat=spat, bidirect=bidirect, prior=prior, func=func
-    )
+    return compute_pwm(sequences, pssm, spat=spat, bidirect=bidirect, prior=prior, func=func)
 
 
 def gextract_pwm_quantile(
@@ -193,15 +189,17 @@ def gextract_pwm_quantile(
     import pymisha as pm
 
     # Determine interval size
-    if size is not None:
-        interval_size = size
-    else:
-        interval_size = int((intervals["end"] - intervals["start"]).iloc[0])
+    interval_size = size if size is not None else int((intervals["end"] - intervals["start"]).iloc[0])
 
     # Score the input intervals
     scores = gextract_pwm(
-        intervals, pssm, spat=spat, bidirect=bidirect, prior=prior,
-        func=func, size=size,
+        intervals,
+        pssm,
+        spat=spat,
+        bidirect=bidirect,
+        prior=prior,
+        func=func,
+        size=size,
     )
 
     # Build background distribution
@@ -209,7 +207,12 @@ def gextract_pwm_quantile(
         bg_intervals = pm.gintervals_random(interval_size, n_sequences)
 
     bg_scores = gextract_pwm(
-        bg_intervals, pssm, spat=spat, bidirect=bidirect, prior=prior, func=func,
+        bg_intervals,
+        pssm,
+        spat=spat,
+        bidirect=bidirect,
+        prior=prior,
+        func=func,
     )
 
     # Compute quantile breakpoints from background
@@ -217,8 +220,7 @@ def gextract_pwm_quantile(
     bg_quantile_values = np.nanquantile(bg_scores, quantiles_arr)
 
     # Map each input score to its quantile via interpolation
-    result = np.interp(scores, bg_quantile_values, quantiles_arr)
-    return result
+    return np.interp(scores, bg_quantile_values, quantiles_arr)
 
 
 def gextract_local_pwm(
@@ -261,7 +263,11 @@ def gextract_local_pwm(
 
     sequences = intervals_to_seq(intervals, size=size)
     return compute_local_pwm(
-        sequences, pssm, spat=spat, bidirect=bidirect, prior=prior,
+        sequences,
+        pssm,
+        spat=spat,
+        bidirect=bidirect,
+        prior=prior,
     )
 
 
@@ -307,7 +313,11 @@ def gintervals_center_by_pssm(
 
     # Compute per-position scores
     local_pwm = gextract_local_pwm(
-        intervals, pssm, spat=spat, bidirect=bidirect, prior=prior,
+        intervals,
+        pssm,
+        spat=spat,
+        bidirect=bidirect,
+        prior=prior,
     )
 
     # Find the position of maximum score per interval
@@ -322,7 +332,5 @@ def gintervals_center_by_pssm(
     result = pm.gintervals_normalize(result, size)
 
     # Ensure standard column order
-    cols = ["chrom", "start", "end"] + [
-        c for c in result.columns if c not in ("chrom", "start", "end")
-    ]
+    cols = ["chrom", "start", "end"] + [c for c in result.columns if c not in ("chrom", "start", "end")]
     return result[cols]

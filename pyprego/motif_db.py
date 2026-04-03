@@ -10,18 +10,18 @@ efficient batch scoring across many motifs.
 
 from __future__ import annotations
 
-import importlib.resources
 import re
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 
 from .compute import compute_pwm
-from .types import NUCLEOTIDES, pssm_dataframe, pssm_to_array
+from .types import NUCLEOTIDES
 
 if TYPE_CHECKING:
     pass
@@ -89,16 +89,13 @@ class MotifDB:
             errors.append("Matrix rows must be a multiple of 4 (A, C, G, T)")
 
         if self.mat.shape != self.rc_mat.shape:
-            errors.append(
-                "Reverse complement matrix must have the same dimensions as the main matrix"
-            )
+            errors.append("Reverse complement matrix must have the same dimensions as the main matrix")
 
         n_motifs = self.mat.shape[1]
 
         if len(self.motif_lengths) != n_motifs:
             errors.append(
-                f"Length of motif_lengths ({len(self.motif_lengths)}) must match "
-                f"number of matrix columns ({n_motifs})"
+                f"Length of motif_lengths ({len(self.motif_lengths)}) must match number of matrix columns ({n_motifs})"
             )
 
         if any(v <= 0 for v in self.motif_lengths.values()):
@@ -110,9 +107,7 @@ class MotifDB:
         # Spatial factors
         if self.spat_factors.shape[0] > 0:
             if self.spat_factors.shape[0] != n_motifs:
-                errors.append(
-                    "Number of rows in spatial factors must match number of motifs"
-                )
+                errors.append("Number of rows in spatial factors must match number of motifs")
             if np.any(self.spat_factors < 0):
                 errors.append("Spatial factors must be non-negative")
 
@@ -147,10 +142,7 @@ class MotifDB:
         n = len(self)
         parts = [f"MotifDB with {n} motif{'s' if n != 1 else ''}, prior={self.prior}"]
         if self.spat_factors.shape[1] > 1 or self.spat_bin_size > 1:
-            parts.append(
-                f"  Spatial: bin_size={self.spat_bin_size}, "
-                f"bins_per_motif={self.spat_factors.shape[1]}"
-            )
+            parts.append(f"  Spatial: bin_size={self.spat_bin_size}, bins_per_motif={self.spat_factors.shape[1]}")
         if self.spat_min is not None and self.spat_max is not None:
             parts.append(f"  Spatial range: {self.spat_min} to {self.spat_max}")
         return "\n".join(parts)
@@ -188,9 +180,7 @@ class MotifDB:
                 indices = [int(k) for k in key]
                 for idx in indices:
                     if idx < 0 or idx >= len(all_names):
-                        raise IndexError(
-                            f"Index {idx} out of bounds for MotifDB with {len(all_names)} motifs"
-                        )
+                        raise IndexError(f"Index {idx} out of bounds for MotifDB with {len(all_names)} motifs")
             else:
                 # String keys -- exact match
                 missing = [k for k in key if k not in self.motif_lengths]
@@ -257,9 +247,7 @@ class MotifDB:
 # ---------------------------------------------------------------------------
 
 
-def _motif_db_to_mat(
-    motif_df: pd.DataFrame, prior: float
-) -> tuple[np.ndarray, np.ndarray]:
+def _motif_db_to_mat(motif_df: pd.DataFrame, prior: float) -> tuple[np.ndarray, np.ndarray]:
     """Convert a tidy motif DataFrame to stacked forward and RC matrices.
 
     Mirrors the R ``motif_db_to_mat`` function.
@@ -387,7 +375,7 @@ def create_motif_db(
 
     # Replace -inf (from log(0)) with 0 -- matching R behaviour
     # where positions beyond motif length are zeroed out
-    D = forward_mat.shape[0] // 4
+    forward_mat.shape[0] // 4
     for i, name in enumerate(motif_names):
         ml = motif_lengths[name]
         if ml * 4 < forward_mat.shape[0]:
@@ -444,7 +432,7 @@ def motif_db_to_dataframe(db: MotifDB) -> pd.DataFrame:
     prob_mat = np.exp(db.mat)
 
     motif_names = db.names()
-    D = db.mat.shape[0] // 4
+    db.mat.shape[0] // 4
 
     rows: list[dict] = []
     for col_idx, name in enumerate(motif_names):
@@ -654,10 +642,7 @@ def screen_pwm(
         response = np.nanmean(response, axis=1)
 
     if len(sequences) != len(response):
-        raise ValueError(
-            f"Number of sequences ({len(sequences)}) and response length "
-            f"({len(response)}) do not match"
-        )
+        raise ValueError(f"Number of sequences ({len(sequences)}) and response length ({len(response)}) do not match")
 
     if np.any(pd.isna(sequences)):
         raise ValueError("There are missing values in the sequences")
@@ -683,17 +668,13 @@ def screen_pwm(
     results: list[dict[str, object]] = []
     for name in motif_names:
         motif_pssm = df[df["motif"] == name][["pos", "A", "C", "G", "T"]].copy()
-        pwm_scores = compute_pwm(
-            sequences, motif_pssm, bidirect=bidirect, prior=prior
-        )
+        pwm_scores = compute_pwm(sequences, motif_pssm, bidirect=bidirect, prior=prior)
 
         if metric == "ks":
             mask_pos = response.astype(bool)
             mask_neg = ~mask_pos
             if mask_pos.sum() > 0 and mask_neg.sum() > 0:
-                stat, _ = scipy_stats.ks_2samp(
-                    pwm_scores[mask_pos], pwm_scores[mask_neg]
-                )
+                stat, _ = scipy_stats.ks_2samp(pwm_scores[mask_pos], pwm_scores[mask_neg])
                 score = float(stat)
             else:
                 score = 0.0
@@ -736,9 +717,7 @@ def _load_csv_dataset(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     required = {"motif", "pos", "A", "C", "G", "T"}
     if not required.issubset(df.columns):
-        raise ValueError(
-            f"CSV file must have columns {required}, got {set(df.columns)}"
-        )
+        raise ValueError(f"CSV file must have columns {required}, got {set(df.columns)}")
     return df
 
 
@@ -768,10 +747,7 @@ def all_motif_datasets(
         ``C``, ``G``, ``T``, ``dataset``, ``motif_orig``.
     """
     if data_dir is None:
-        if _DATA_DIR.exists():
-            data_dir = _DATA_DIR
-        else:
-            data_dir = Path("/tmp")
+        data_dir = _DATA_DIR if _DATA_DIR.exists() else Path("/tmp")
 
     data_dir = Path(data_dir)
 
@@ -779,19 +755,23 @@ def all_motif_datasets(
     if datasets is not None:
         for ds in datasets:
             if ds not in available:
-                raise ValueError(
-                    f"Unknown dataset {ds!r}, available: {available}"
-                )
+                raise ValueError(f"Unknown dataset {ds!r}, available: {available}")
         to_load = datasets
     else:
         to_load = available
 
     frames: list[pd.DataFrame] = []
     for ds_name in to_load:
-        path = data_dir / f"{ds_name}_motifs.csv"
-        if not path.exists():
+        # Try .csv.gz first, then .csv
+        path_gz = data_dir / f"{ds_name}_motifs.csv.gz"
+        path_csv = data_dir / f"{ds_name}_motifs.csv"
+        if path_gz.exists():
+            path = path_gz
+        elif path_csv.exists():
+            path = path_csv
+        else:
             warnings.warn(
-                f"Dataset file not found: {path}. Skipping {ds_name}.",
+                f"Dataset file not found: {path_csv} or {path_gz}. Skipping {ds_name}.",
                 stacklevel=2,
             )
             continue
@@ -803,8 +783,7 @@ def all_motif_datasets(
 
     if not frames:
         raise FileNotFoundError(
-            f"No motif dataset files found in {data_dir}. "
-            f"Expected files like HOMER_motifs.csv, JASPAR_motifs.csv, etc."
+            f"No motif dataset files found in {data_dir}. Expected files like HOMER_motifs.csv, JASPAR_motifs.csv, etc."
         )
 
     return pd.concat(frames, ignore_index=True)
@@ -892,9 +871,7 @@ def motif_enrichment(
 
     groups = np.asarray(groups)
     if len(groups) != pwm_q.shape[0]:
-        raise ValueError(
-            "Number of rows in pwm_q must match length of groups"
-        )
+        raise ValueError("Number of rows in pwm_q must match length of groups")
 
     if type not in ("relative", "absolute"):
         raise ValueError(f"type must be 'relative' or 'absolute', got {type!r}")
@@ -934,7 +911,5 @@ def motif_enrichment(
     return pd.DataFrame(
         enrichment,
         index=unique_groups,
-        columns=[f"motif_{i}" for i in range(n_motifs)]
-        if pwm_q.shape[1] > 0
-        else [],
+        columns=[f"motif_{i}" for i in range(n_motifs)] if pwm_q.shape[1] > 0 else [],
     )

@@ -18,6 +18,7 @@ from .types import NUCLEOTIDES, pssm_to_array
 if TYPE_CHECKING:
     import matplotlib.axes
     import matplotlib.figure
+
     from .types import RegressionResult
 
 
@@ -25,20 +26,20 @@ if TYPE_CHECKING:
 # Lazy imports
 # ---------------------------------------------------------------------------
 
+
 def _require_matplotlib():
     """Raise a clear error if matplotlib is not installed."""
     try:
         import matplotlib.pyplot  # noqa: F401
     except ImportError as exc:
-        raise ImportError(
-            "Plotting requires matplotlib. Install it with: pip install matplotlib"
-        ) from exc
+        raise ImportError("Plotting requires matplotlib. Install it with: pip install matplotlib") from exc
 
 
 def _try_import_logomaker():
     """Return the logomaker module if available, else None."""
     try:
         import logomaker
+
         return logomaker
     except ImportError:
         return None
@@ -54,6 +55,7 @@ _NUC_COLORS = {"A": "#109648", "C": "#255C99", "G": "#F7B32B", "T": "#D62839"}
 # ---------------------------------------------------------------------------
 # Sequence logo
 # ---------------------------------------------------------------------------
+
 
 def plot_pssm_logo(
     pssm: pd.DataFrame,
@@ -135,8 +137,9 @@ def _plot_logo_bars(
             if h > 0:
                 ax.bar(pos, h, bottom=bottom, color=_NUC_COLORS[nuc], width=0.8, edgecolor="none")
                 if h > 0.15:
-                    ax.text(pos, bottom + h / 2, nuc, ha="center", va="center",
-                            fontsize=8, fontweight="bold", color="white")
+                    ax.text(
+                        pos, bottom + h / 2, nuc, ha="center", va="center", fontsize=8, fontweight="bold", color="white"
+                    )
                 bottom += h
     ax.set_xlim(-0.5, len(height_df) - 0.5)
 
@@ -144,6 +147,7 @@ def _plot_logo_bars(
 # ---------------------------------------------------------------------------
 # Spatial model
 # ---------------------------------------------------------------------------
+
 
 def plot_spat_model(
     spat: pd.DataFrame,
@@ -189,6 +193,7 @@ def plot_spat_model(
 # ---------------------------------------------------------------------------
 # Regression prediction: continuous
 # ---------------------------------------------------------------------------
+
 
 def plot_regression_prediction(
     pred: np.ndarray,
@@ -243,7 +248,7 @@ def plot_regression_prediction(
     mask = np.isfinite(pred) & np.isfinite(response)
     if mask.sum() > 2:
         correlation = float(np.corrcoef(pred[mask], response[mask])[0, 1])
-        r2 = correlation ** 2
+        r2 = correlation**2
         subtitle = f"$r^2$ = {r2:.3f}, $r$ = {correlation:.3f}"
         ax.set_title(f"{title}\n{subtitle}" if title else subtitle, fontsize=10)
     elif title:
@@ -256,6 +261,7 @@ def plot_regression_prediction(
 # ---------------------------------------------------------------------------
 # Regression prediction: binary (1 - ECDF plot, matching R KS approach)
 # ---------------------------------------------------------------------------
+
 
 def plot_regression_prediction_binary(
     pred: np.ndarray,
@@ -340,6 +346,7 @@ def plot_regression_prediction_binary(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_binary_response(response: np.ndarray) -> bool:
     """Check if a response vector is binary (contains only 0 and 1)."""
     response = np.asarray(response, dtype=np.float64)
@@ -352,6 +359,7 @@ def _is_binary_response(response: np.ndarray) -> bool:
 # ---------------------------------------------------------------------------
 # Regression QC (multi-panel)
 # ---------------------------------------------------------------------------
+
 
 def plot_regression_qc(
     result: RegressionResult,
@@ -398,10 +406,7 @@ def plot_regression_qc(
     import matplotlib.pyplot as plt
 
     if response is None:
-        raise ValueError(
-            "response is required for plot_regression_qc. "
-            "Pass the response array used during regression."
-        )
+        raise ValueError("response is required for plot_regression_qc. Pass the response array used during regression.")
 
     response = np.asarray(response, dtype=np.float64)
     if response.ndim == 2:
@@ -424,8 +429,11 @@ def plot_regression_qc(
         plot_regression_prediction_binary(result.pred, response, ax=axes[2])
     else:
         plot_regression_prediction(
-            result.pred, response, ax=axes[2],
-            point_size=point_size, alpha=alpha,
+            result.pred,
+            response,
+            ax=axes[2],
+            point_size=point_size,
+            alpha=alpha,
         )
 
     fig.tight_layout()
@@ -442,6 +450,7 @@ def plot_regression_qc(
 # ---------------------------------------------------------------------------
 # Multi-motif QC
 # ---------------------------------------------------------------------------
+
 
 def plot_regression_qc_multi(
     result,
@@ -485,14 +494,11 @@ def plot_regression_qc_multi(
     import matplotlib.pyplot as plt
 
     if not hasattr(result, "models") or not hasattr(result, "multi_stats"):
-        raise ValueError(
-            "result must be a MultiRegressionResult with 'models' and 'multi_stats' attributes."
-        )
+        raise ValueError("result must be a MultiRegressionResult with 'models' and 'multi_stats' attributes.")
 
     if response is None:
         raise ValueError(
-            "response is required for plot_regression_qc_multi. "
-            "Pass the response array used during regression."
+            "response is required for plot_regression_qc_multi. Pass the response array used during regression."
         )
 
     response = np.asarray(response, dtype=np.float64)
@@ -512,15 +518,16 @@ def plot_regression_qc_multi(
     n_rows = n_models + 1
     n_cols = 3
     fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows),
+        n_rows,
+        n_cols,
+        figsize=(5 * n_cols, 3.5 * n_rows),
         gridspec_kw={"height_ratios": [1.0] * n_models + [0.6]},
     )
     fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
 
-    if n_models == 1:
-        # axes shape is (n_rows, n_cols) -- ensure 2D
-        if axes.ndim == 1:
-            axes = axes.reshape(n_rows, n_cols)
+    # axes shape is (n_rows, n_cols) -- ensure 2D
+    if n_models == 1 and axes.ndim == 1:
+        axes = axes.reshape(n_rows, n_cols)
 
     stats = result.multi_stats
 
@@ -546,8 +553,11 @@ def plot_regression_qc_multi(
             plot_regression_prediction_binary(model.pred, response, ax=axes[i, 2])
         else:
             plot_regression_prediction(
-                model.pred, response, ax=axes[i, 2],
-                point_size=point_size, alpha=alpha,
+                model.pred,
+                response,
+                ax=axes[i, 2],
+                point_size=point_size,
+                alpha=alpha,
             )
 
     # Bottom row: score summary bar chart
@@ -562,16 +572,23 @@ def plot_regression_qc_multi(
         width = 0.35
         score_vals = stats["score"].to_numpy()
         bars1 = ax_scores.bar(x - width / 2, score_vals, width, label="Score", color="#4472C4")
-        for bar, val in zip(bars1, score_vals):
-            ax_scores.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                           f"{val:.3f}", ha="center", va="bottom", fontsize=8)
+        for bar, val in zip(bars1, score_vals, strict=False):
+            ax_scores.text(
+                bar.get_x() + bar.get_width() / 2, bar.get_height(), f"{val:.3f}", ha="center", va="bottom", fontsize=8
+            )
 
         if "comb_score" in stats.columns:
             comb_vals = stats["comb_score"].to_numpy()
             bars2 = ax_scores.bar(x + width / 2, comb_vals, width, label="Combined score", color="#ED7D31")
-            for bar, val in zip(bars2, comb_vals):
-                ax_scores.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                               f"{val:.3f}", ha="center", va="bottom", fontsize=8)
+            for bar, val in zip(bars2, comb_vals, strict=False):
+                ax_scores.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height(),
+                    f"{val:.3f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
 
         ax_scores.set_xticks(x)
         ax_scores.set_xticklabels([f"Model {i + 1}" for i in range(len(stats))])

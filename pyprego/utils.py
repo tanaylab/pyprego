@@ -329,9 +329,7 @@ def sample_quantile_matched_rows(
     sample_size = int(np.floor(n * sample_fraction))
 
     if sample_size < 1:
-        raise ValueError(
-            f"Sample fraction {sample_fraction} is too small for the given data frame size {n}."
-        )
+        raise ValueError(f"Sample fraction {sample_fraction} is too small for the given data frame size {n}.")
 
     # Adjust num_quantiles if it's larger than sample_size
     num_quantiles = min(sample_size, num_quantiles)

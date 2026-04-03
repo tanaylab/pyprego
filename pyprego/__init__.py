@@ -8,23 +8,49 @@ PSSM scoring, k-mer analysis, and iterative motif regression.
 __version__ = "0.0.1"
 
 # --- Core types ---
-from .types import (
-    NUCLEOTIDES,
-    RegressionResult,
-    pssm_dataframe,
-    pssm_to_array,
-    spatial_dataframe,
+# --- PWM computation ---
+from .compute import (
+    compute_local_pwm,
+    compute_pwm,
 )
 
-# --- Utilities ---
-from .utils import (
-    calc_sequences_dinuc_dist,
-    calc_sequences_dinucs,
-    calc_sequences_trinuc_dist,
-    rc,
-    rc_array,
-    sample_quantile_matched_rows,
-    validate_sequences,
+# --- Export/Load ---
+from .export import (
+    export_multi_regression,
+    export_regression_model,
+    load_multi_regression,
+    load_regression_model,
+)
+
+# --- Genomic integration (requires pymisha; functions raise ImportError if missing) ---
+from .genomic import (
+    gextract_local_pwm,
+    gextract_pwm,
+    gextract_pwm_quantile,
+    gintervals_center_by_pssm,
+    intervals_to_seq,
+)
+
+# --- K-mer operations ---
+from .kmers import (
+    generate_kmers,
+    kmer_matrix,
+    kmers_to_pssm,
+    pssm_to_kmer,
+    screen_kmers,
+)
+
+# --- Motif database ---
+from .motif_db import (
+    MotifDB,
+    all_motif_datasets,
+    create_motif_db,
+    extract_pwm,
+    get_motif_pssm,
+    motif_db_to_dataframe,
+    motif_enrichment,
+    screen_pwm,
+    set_prior,
 )
 
 # --- PSSM operations ---
@@ -47,25 +73,10 @@ from .pssm import (
     trim_pssm,
 )
 
-# --- K-mer operations ---
-from .kmers import (
-    generate_kmers,
-    kmer_matrix,
-    kmers_to_pssm,
-    pssm_to_kmer,
-    screen_kmers,
-)
-
-# --- PWM computation ---
-from .compute import (
-    compute_local_pwm,
-    compute_pwm,
-)
-
 # --- Regression ---
 from .regression import (
-    CVRegressionResult,
     ClusterRegressionResult,
+    CVRegressionResult,
     MultiRegressionResult,
     regress_multiple_motifs,
     regress_pwm,
@@ -73,26 +84,23 @@ from .regression import (
     regress_pwm_core,
     regress_pwm_cv,
 )
-
-# --- Export/Load ---
-from .export import (
-    export_multi_regression,
-    export_regression_model,
-    load_multi_regression,
-    load_regression_model,
+from .types import (
+    NUCLEOTIDES,
+    RegressionResult,
+    pssm_dataframe,
+    pssm_to_array,
+    spatial_dataframe,
 )
 
-# --- Motif database ---
-from .motif_db import (
-    MotifDB,
-    all_motif_datasets,
-    create_motif_db,
-    extract_pwm,
-    get_motif_pssm,
-    motif_db_to_dataframe,
-    motif_enrichment,
-    screen_pwm,
-    set_prior,
+# --- Utilities ---
+from .utils import (
+    calc_sequences_dinuc_dist,
+    calc_sequences_dinucs,
+    calc_sequences_trinuc_dist,
+    rc,
+    rc_array,
+    sample_quantile_matched_rows,
+    validate_sequences,
 )
 
 # --- Visualization (lazy: matplotlib not imported until needed) ---
@@ -104,16 +112,6 @@ from .visualization import (
     plot_regression_qc_multi,
     plot_spat_model,
 )
-
-# --- Genomic integration (requires pymisha; functions raise ImportError if missing) ---
-from .genomic import (
-    gextract_local_pwm,
-    gextract_pwm,
-    gextract_pwm_quantile,
-    gintervals_center_by_pssm,
-    intervals_to_seq,
-)
-
 
 __all__ = [
     # Version

@@ -1,5 +1,10 @@
 # pyprego
 
+[![PyPI](https://img.shields.io/pypi/v/pyprego.svg)](https://pypi.org/project/pyprego/)
+[![CI](https://github.com/tanaylab/pyprego/actions/workflows/ci.yml/badge.svg)](https://github.com/tanaylab/pyprego/actions/workflows/ci.yml)
+[![Docs](https://github.com/tanaylab/pyprego/actions/workflows/docs.yml/badge.svg)](https://tanaylab.github.io/pyprego/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 Python implementation of the [prego](https://github.com/tanaylab/prego) R package — a PWM Regression Optimizer for motif discovery in DNA sequences.
 
 ## Installation

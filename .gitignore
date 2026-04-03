@@ -24,3 +24,4 @@ htmlcov/
 # Env
 .env
 .venv/
+.a5c/

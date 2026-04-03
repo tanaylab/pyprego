@@ -1,0 +1,53 @@
+{% set name = "pyprego" %}
+{% set version = environ.get("PACKAGE_VERSION", "0.0.1") %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: SET_ON_RELEASE
+
+build:
+  number: 0
+  skip: true  # [win]
+
+requirements:
+  build:
+    - {{ compiler("cxx") }}
+    - sysroot_linux-64 2.17  # [linux64]
+  host:
+    - python
+    - pip
+    - setuptools >=61.0
+    - wheel
+    - numpy
+  run:
+    - python
+    - {{ pin_compatible("numpy") }}
+    - pandas >=1.3
+    - scipy >=1.7
+    - matplotlib >=3.5
+    - pyyaml >=6.0
+
+test:
+  imports:
+    - pyprego
+
+about:
+  home: https://github.com/tanaylab/pyprego
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: PWM regression optimizer for motif discovery in DNA sequences
+  description: |
+    pyprego is a Python implementation of the prego R package -- a PWM
+    Regression Optimizer for discovering motifs in DNA sequences using
+    position weight matrix regression with spatial models.
+  dev_url: https://github.com/tanaylab/pyprego
+  doc_url: https://tanaylab.github.io/pyprego/
+
+extra:
+  recipe-maintainers:
+    - aviezerl

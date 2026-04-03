@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "numpy>=1.20"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -51,6 +51,10 @@ dev = [
     "mypy",
     "logomaker>=0.8",
 ]
+docs = [
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+]
 all = [
     "pymisha>=0.1",
     "logomaker>=0.8",
@@ -65,7 +69,7 @@ Issues = "https://github.com/tanaylab/pyprego/issues"
 packages = ["pyprego"]
 
 [tool.setuptools.package-data]
-pyprego = ["py.typed"]
+pyprego = ["py.typed", "data/*.csv.gz", "data/*.csv"]
 
 [tool.ruff]
 line-length = 120

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from ._fast_encode import encode_sequences_fast
 from .types import NUCLEOTIDES, pssm_to_array
 
 if TYPE_CHECKING:
@@ -31,25 +32,9 @@ _COMPLEMENT = np.array([3, 2, 1, 0], dtype=np.intp)
 def _encode_sequences(sequences: list[str] | np.ndarray) -> np.ndarray:
     """Encode DNA sequences as an integer matrix.
 
-    Parameters
-    ----------
-    sequences : list[str] | np.ndarray
-        DNA sequences (equal length).
-
-    Returns
-    -------
-    np.ndarray
-        Integer matrix of shape ``(n_sequences, seq_length)`` where values
-        are 0=A, 1=C, 2=G, 3=T, -1=N/unknown.
+    Uses fast vectorized byte lookup. See :func:`_fast_encode.encode_sequences_fast`.
     """
-    n = len(sequences)
-    L = len(sequences[0])
-    encoded = np.full((n, L), -1, dtype=np.int8)
-    for i, seq in enumerate(sequences):
-        for j, ch in enumerate(seq):
-            idx = _NUC_IDX.get(ch, -1)
-            encoded[i, j] = idx
-    return encoded
+    return encode_sequences_fast(sequences)
 
 
 def _prepare_pssm(pssm: pd.DataFrame, prior: float) -> np.ndarray:
@@ -116,8 +101,7 @@ def _prepare_pssm_local(pssm: pd.DataFrame, prior: float) -> np.ndarray:
     # Normalize (as C++ does)
     row_sums = mat.sum(axis=1, keepdims=True)
     row_sums[row_sums == 0] = 1.0
-    mat = mat / row_sums
-    return mat
+    return mat / row_sums
 
 
 def _compute_log_pssm(prob: np.ndarray) -> np.ndarray:
@@ -304,10 +288,7 @@ def compute_pwm(
         spat_factors = spat["spat_factor"].to_numpy(dtype=np.float64)
         bins = spat["bin"].to_numpy()
         bin_diffs = np.diff(bins)
-        if len(bin_diffs) == 0:
-            bin_size = seq_len
-        else:
-            bin_size = int(bin_diffs[0])
+        bin_size = seq_len if len(bin_diffs) == 0 else int(bin_diffs[0])
 
     # Prepare PSSM
     prob = _prepare_pssm(pssm, prior)
@@ -416,15 +397,12 @@ def compute_local_pwm(
     # Parse spatial model
     if spat is None:
         spat_factors = np.array([1.0])
-        bin_size = len(sequences[0])  # single bin covering entire sequence
+        len(sequences[0])  # single bin covering entire sequence
     else:
         spat_factors = spat["spat_factor"].to_numpy(dtype=np.float64)
         bins = spat["bin"].to_numpy()
         bin_diffs = np.diff(bins)
-        if len(bin_diffs) == 0:
-            bin_size = len(sequences[0])
-        else:
-            bin_size = int(bin_diffs[0])
+        len(sequences[0]) if len(bin_diffs) == 0 else int(bin_diffs[0])
 
     encoded = _encode_sequences(sequences)
     N, L = encoded.shape

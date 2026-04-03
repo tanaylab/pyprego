@@ -14,9 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .compute import compute_pwm
-from .pssm import consensus_from_pssm
-from .types import RegressionResult, pssm_dataframe, spatial_dataframe
-
+from .types import RegressionResult
 
 # ──────────────────────────────────────────────────────────────────────
 # Single model export/load
@@ -135,16 +133,18 @@ def export_multi_regression(
     """
     models_data = []
     for m in reg.models:
-        models_data.append({
-            "pssm": m.pssm.to_dict(orient="list"),
-            "spat": m.spat.to_dict(orient="list"),
-            "spat_min": int(m.spat_min),
-            "spat_max": int(m.spat_max) if m.spat_max is not None else None,
-            "bidirect": bool(m.bidirect),
-            "seq_length": int(m.seq_length) if m.seq_length is not None else None,
-            "consensus": m.consensus,
-            "seed_motif": m.seed_motif,
-        })
+        models_data.append(
+            {
+                "pssm": m.pssm.to_dict(orient="list"),
+                "spat": m.spat.to_dict(orient="list"),
+                "spat_min": int(m.spat_min),
+                "spat_max": int(m.spat_max) if m.spat_max is not None else None,
+                "bidirect": bool(m.bidirect),
+                "seq_length": int(m.seq_length) if m.seq_length is not None else None,
+                "consensus": m.consensus,
+                "seed_motif": m.seed_motif,
+            }
+        )
 
     data = {
         "models": models_data,
@@ -198,6 +198,7 @@ def load_multi_regression(fn: str | Path | dict):
                 sequences = [s.upper() for s in sequences]
                 trimmed = [s[smin:smax] for s in sequences]
                 return compute_pwm(trimmed, pssm, spat=spat, bidirect=bi, prior=0)
+
             return _predict_fn
 
         result = RegressionResult(
