@@ -4,6 +4,22 @@ All notable changes to pyprego will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.2] - 2026-04-03
+
+### Fixed
+
+- macOS build: disable OpenMP on Darwin (clang lacks native support)
+- All ruff lint and format issues resolved
+
+### Added
+
+- CI/CD: lint, test, docs, PyPI publish, conda publish workflows
+- MkDocs documentation site with 4 tutorial vignettes
+- Shipping script with remote guardrails
+- Pre-commit hooks (ruff, trailing whitespace)
+- Conda recipe, MANIFEST.in, LICENSE
+- README badges (PyPI, CI, Docs, License)
+
 ## [0.0.1] - 2025-01-01
 
 ### Added

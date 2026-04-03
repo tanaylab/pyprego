@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyprego"
-version = "0.0.1"
+version = "0.0.2"
 description = "PWM regression optimizer for motif discovery in DNA sequences"
 readme = "README.md"
 license = {text = "MIT"}

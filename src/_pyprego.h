@@ -15,6 +15,11 @@
 #include <limits>
 #include <vector>
 
+// OpenMP: available on Linux, disabled on macOS (clang lacks -fopenmp)
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // ---------------------------------------------------------------------------
 // Array element access helpers (1-D contiguous arrays)
 // ---------------------------------------------------------------------------
