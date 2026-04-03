@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyprego"
+version = "0.0.1"
+description = "PWM regression optimizer for motif discovery in DNA sequences"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Aviezer Lifshitz", email = "aviezer.lifshitz@weizmann.ac.il"},
+    {name = "Amos Tanay", email = "amos.tanay@weizmann.ac.il"},
+]
+maintainers = [
+    {name = "Aviezer Lifshitz", email = "aviezer.lifshitz@weizmann.ac.il"},
+]
+keywords = ["bioinformatics", "genomics", "PWM", "position-weight-matrix", "motif-discovery", "DNA-sequences"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.20",
+    "pandas>=1.3",
+    "scipy>=1.7",
+    "matplotlib>=3.5",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+genomic = [
+    "pymisha>=0.1",
+]
+viz = [
+    "logomaker>=0.8",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "ruff>=0.6",
+    "mypy",
+    "logomaker>=0.8",
+]
+all = [
+    "pymisha>=0.1",
+    "logomaker>=0.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/tanaylab/pyprego"
+Repository = "https://github.com/tanaylab/pyprego.git"
+Issues = "https://github.com/tanaylab/pyprego/issues"
+
+[tool.setuptools]
+packages = ["pyprego"]
+
+[tool.setuptools.package-data]
+pyprego = ["py.typed"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W", "B", "SIM", "PIE", "RET", "C4"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**" = ["S101", "B017", "B023"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pyprego"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "genomic: marks tests that require pymisha/genomic DB",
+]
+
+[tool.coverage.run]
+source = ["pyprego"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
