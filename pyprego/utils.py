@@ -7,6 +7,12 @@ from itertools import product
 import numpy as np
 import pandas as pd
 
+# Try importing C extension for fast dinucleotide counting
+try:
+    from pyprego._pyprego import calc_sequences_dinucs as _calc_sequences_dinucs_c
+except (ImportError, AttributeError):
+    _calc_sequences_dinucs_c = None
+
 # Complement mapping for DNA bases (handles upper and lower case)
 _COMPLEMENT: dict[str, str] = {
     "A": "T",
@@ -153,6 +159,14 @@ def calc_sequences_dinucs(sequences: list[str] | np.ndarray) -> np.ndarray:
         ``columns`` holding the dinucleotide names (for convenience; use
         :func:`dinuc_names` to obtain the list).
     """
+    seq_list = list(sequences)
+    if _calc_sequences_dinucs_c is not None:
+        return _calc_sequences_dinucs_c(seq_list)
+    return _calc_sequences_dinucs_python(seq_list)
+
+
+def _calc_sequences_dinucs_python(sequences: list[str]) -> np.ndarray:
+    """Pure Python fallback for dinucleotide counting."""
     dinucs = _generate_n_mers(2)
     dinuc_to_idx = {d: i for i, d in enumerate(dinucs)}
 

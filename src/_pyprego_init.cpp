@@ -40,6 +40,9 @@ extern PyObject *pyprego_init_energies(PyObject *self, PyObject *args);
 // Defined in score_ops.cpp
 extern PyObject *pyprego_choose_best_move(PyObject *self, PyObject *args);
 
+// Defined in dinuc_ops.cpp
+extern PyObject *pyprego_calc_sequences_dinucs(PyObject *self, PyObject *args);
+
 // ---------------------------------------------------------------------------
 // Method table
 // ---------------------------------------------------------------------------
@@ -55,6 +58,9 @@ static PyMethodDef module_methods[] = {
     {"choose_best_move", pyprego_choose_best_move, METH_VARARGS,
      "choose_best_move(derivs, nuc_factors, response, ...) -> (best_pos, best_step, scores)\n"
      "Evaluate all candidate moves and return the best one (C++)."},
+    {"calc_sequences_dinucs", pyprego_calc_sequences_dinucs, METH_VARARGS,
+     "calc_sequences_dinucs(sequences: list[str]) -> ndarray[int64, (N, 16)]\n"
+     "Count dinucleotide occurrences in each sequence (C++ with OpenMP)."},
     {NULL, NULL, 0, NULL}
 };
 

@@ -136,8 +136,6 @@ pytest tests/
 - **Optional pymisha**: Genomic functions work when pymisha is installed
 - **GPU-ready design**: Clean array interfaces allow future torch tensor swap
 
-See [DECISIONS.md](DECISIONS.md) for detailed architecture decisions.
-
 ## License
 
 MIT

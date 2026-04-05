@@ -342,10 +342,14 @@ def screen_kmers(
     if kmers is not None:
         km_df = kmer_matrix(sequences, kmers)
         kmer_list = list(km_df.columns)
-    else:
+    elif min_gap > 0:
         assert kmer_len is not None
         kmer_list_gen = generate_kmers(kmer_len, max_gap=max_gap, min_gap=min_gap)
         km_df = kmer_matrix(sequences, kmer_list_gen)
+        kmer_list = list(km_df.columns)
+    else:
+        assert kmer_len is not None
+        km_df = kmer_matrix(sequences, kmer_len, max_gap=max_gap)
         kmer_list = list(km_df.columns)
 
     counts = km_df.to_numpy(dtype=np.float64)

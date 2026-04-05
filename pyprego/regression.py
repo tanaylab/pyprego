@@ -347,31 +347,17 @@ class _PWMLRegression:
 
     def _init_energies_c(self) -> None:
         """C extension implementation of init_energies."""
-        # Ensure arrays are C-contiguous and correct dtype
-        encoded = np.ascontiguousarray(self.encoded, dtype=np.int8)
-        nuc_factors = np.ascontiguousarray(self.nuc_factors, dtype=np.float64)
-        spat_factors = np.ascontiguousarray(self.spat_factors, dtype=np.float64)
-        train_mask = np.ascontiguousarray(self.train_mask, dtype=np.bool_)
-        derivs = np.ascontiguousarray(self.derivs, dtype=np.float64)
-        spat_derivs = np.ascontiguousarray(self.spat_derivs, dtype=np.float64)
-
         _init_energies_c(
-            encoded,
-            nuc_factors,
-            spat_factors,
-            train_mask,
+            self.encoded,
+            self.nuc_factors,
+            self.spat_factors,
+            self.train_mask,
             self.spat_bin_size,
             int(self.bidirect),
             int(self.symmetrize_spat),
-            derivs,
-            spat_derivs,
+            self.derivs,
+            self.spat_derivs,
         )
-
-        # If arrays were copied (not the same object), write back
-        if derivs is not self.derivs:
-            self.derivs[:] = derivs
-        if spat_derivs is not self.spat_derivs:
-            self.spat_derivs[:] = spat_derivs
 
     def _init_energies_numpy(self) -> None:
         """Vectorised NumPy implementation of init_energies."""
@@ -781,36 +767,41 @@ class _PWMLRegression:
         neigh_size = len(self._cur_neigh)
         n_moves = K * neigh_size
 
-        # ── Pre-compute all candidate probability vectors: (n_moves, 4) ──
-        all_probs = np.empty((n_moves, 4))
-        steps_pos = np.empty(n_moves, dtype=int)  # which PSSM position
-        steps_step = np.empty(n_moves, dtype=int)  # which neighbourhood move
+        # ── Build neighbourhood delta matrix once: (neigh_size, 4) ──
+        delta_matrix = np.zeros((neigh_size, 4))
+        for step, moves in enumerate(self._cur_neigh):
+            for nuc_idx, delta_val in moves:
+                delta_matrix[step, nuc_idx] = delta_val
 
-        idx = 0
-        for pos in range(K):
-            for step in range(neigh_size):
-                steps_pos[idx] = pos
-                steps_step[idx] = step
-                all_probs[idx] = self._compute_step_probs(pos, step)
-                idx += 1
+        # ── Vectorized prob computation: (K, neigh_size, 4) ──
+        all_probs_3d = self.nuc_factors[:, None, :] + delta_matrix[None, :, :]
+        np.maximum(all_probs_3d, self.min_prob, out=all_probs_3d)
+        all_probs = all_probs_3d.reshape(n_moves, 4)
 
-        # ── Batch-compute energies for all moves ──
+        # ── Batch-compute energies for all moves via einsum ──
+        # derivs: (N, K, 4), all_probs_3d: (K, neigh_size, 4)
+        # all_energies: (N, K, neigh_size)
+        all_energies = np.einsum("nkd,ksd->nks", self.derivs, all_probs_3d)
+        all_energies = all_energies.reshape(self.n_seq, n_moves)
+
+        # ── Score all moves ──
         if self.score_metric == "r2":
-            scores = self._choose_best_move_r2_batch(all_probs, steps_pos, n_moves)
+            scores = self._choose_best_move_r2_batch(all_energies, n_moves)
         else:
-            scores = self._choose_best_move_ks_batch(all_probs, steps_pos, n_moves)
+            scores = self._choose_best_move_ks_batch(all_energies, n_moves)
 
-        # Rank within each fold
-        ranks = np.zeros((self.num_folds, n_moves), dtype=int)
-        for f in range(self.num_folds):
-            order = np.argsort(scores[f])
-            ranks[f, order] = np.arange(n_moves)
+        # ── Select best move ──
+        if self.num_folds == 1:
+            best_idx = int(np.argmax(scores[0]))
+        else:
+            ranks = np.zeros((self.num_folds, n_moves), dtype=int)
+            for f in range(self.num_folds):
+                order = np.argsort(scores[f])
+                ranks[f, order] = np.arange(n_moves)
+            best_idx = int(np.argmax(ranks.sum(axis=0)))
 
-        avg_ranks = ranks.sum(axis=0) // self.num_folds
-
-        best_idx = int(np.argmax(avg_ranks))
-        best_pos = int(steps_pos[best_idx])
-        best_step = int(steps_step[best_idx])
+        best_pos = best_idx // neigh_size
+        best_step = best_idx % neigh_size
         probs = all_probs[best_idx]
         best_score = self.compute_cur_score(best_pos, probs)
 
@@ -819,95 +810,78 @@ class _PWMLRegression:
 
         return best_pos, best_step, best_score
 
-    def _choose_best_move_r2_batch(self, all_probs: np.ndarray, steps_pos: np.ndarray, n_moves: int) -> np.ndarray:
-        """Batch R2 computation for all candidate moves."""
+    def _choose_best_move_r2_batch(self, all_energies: np.ndarray, n_moves: int) -> np.ndarray:
+        """Batch R2 computation for all candidate moves.
+
+        Parameters
+        ----------
+        all_energies : (n_seq, n_moves) pre-computed energies
+        """
         mask = self.train_mask
-        n_train = self.train_n
         scores = np.zeros((self.num_folds, n_moves))
 
-        # For each unique position, compute energies for all moves at that position
-        for pos in range(self.motif_len):
-            move_mask = steps_pos == pos
-            move_indices = np.where(move_mask)[0]
-            if len(move_indices) == 0:
-                continue
+        if self.log_energy:
+            all_energies = np.where(mask[:, None], np.log(all_energies + self.energy_epsilon), 0.0)
+        else:
+            all_energies[~mask] = 0.0
 
-            probs_at_pos = all_probs[move_indices]  # (n_moves_at_pos, 4)
-            derivs_at_pos = self.derivs[:, pos, :]  # (n_seq, 4)
+        for fi in range(self.num_folds):
+            if self.num_folds == 1:
+                fold_mask = mask
+                fold_n = self.train_n
+                fold_avg = self.data_avg
+                fold_var = self.data_var
+            else:
+                fold_mask = mask & (self.folds == fi)
+                fold_n = int(self.fold_sizes[fi])
+                fold_avg = self.data_avg_fold[fi]
+                fold_var = self.data_var_fold[fi]
 
-            # Energies for all moves: (n_seq, n_moves_at_pos)
-            energies = derivs_at_pos @ probs_at_pos.T  # (n_seq, n_moves_at_pos)
-            energies[~mask] = 0.0
+            e_fold = all_energies[fold_mask]  # (fold_n, n_moves)
+            ex = e_fold.sum(axis=0) / fold_n
+            ex2 = (e_fold * e_fold).sum(axis=0) / fold_n
+            pred_var = ex2 - ex * ex
 
-            if self.log_energy:
-                energies = np.where(mask[:, None], np.log(energies + self.energy_epsilon), 0.0)
-
-            for fi in range(self.num_folds):
-                if self.num_folds == 1:
-                    fold_mask = mask
-                    fold_n = n_train
-                    fold_avg = self.data_avg
-                    fold_var = self.data_var
-                else:
-                    fold_mask = mask & (self.folds == fi)
-                    fold_n = int(self.fold_sizes[fi])
-                    fold_avg = self.data_avg_fold[fi]
-                    fold_var = self.data_var_fold[fi]
-
-                e_fold = energies[fold_mask]  # (fold_n, n_moves_at_pos)
-                ex = e_fold.sum(axis=0) / fold_n
-                ex2 = (e_fold**2).sum(axis=0) / fold_n
-                pred_var = ex2 - ex**2
-
-                for rd in range(self.rdim):
-                    resp_fold = self.response[fold_mask, rd]  # (fold_n,)
-                    xy = (e_fold * resp_fold[:, None]).sum(axis=0) / fold_n
-                    cov = xy - ex * fold_avg[rd]
-                    denom = pred_var * fold_var[rd]
-                    r2 = np.where(denom > 0, cov**2 / denom, 0.0)
-                    scores[fi, move_indices] += r2
+            for rd in range(self.rdim):
+                resp_fold = self.response[fold_mask, rd]  # (fold_n,)
+                xy = (e_fold * resp_fold[:, None]).sum(axis=0) / fold_n
+                cov = xy - ex * fold_avg[rd]
+                denom = pred_var * fold_var[rd]
+                r2 = np.where(denom > 0, cov * cov / denom, 0.0)
+                scores[fi] += r2
 
         return scores
 
-    def _choose_best_move_ks_batch(self, all_probs: np.ndarray, steps_pos: np.ndarray, n_moves: int) -> np.ndarray:
-        """Batch KS computation for all candidate moves."""
+    def _choose_best_move_ks_batch(self, all_energies: np.ndarray, n_moves: int) -> np.ndarray:
+        """Batch KS computation for all candidate moves.
+
+        Parameters
+        ----------
+        all_energies : (n_seq, n_moves) pre-computed energies
+        """
         mask = self.train_mask
         scores = np.zeros((self.num_folds, n_moves))
+        resp = self.response[:, 0]
 
-        for pos in range(self.motif_len):
-            move_mask = steps_pos == pos
-            move_indices = np.where(move_mask)[0]
-            if len(move_indices) == 0:
+        for fi in range(self.num_folds):
+            fold_mask = mask if self.num_folds == 1 else mask & (self.folds == fi)
+
+            e_fold = all_energies[fold_mask]  # (fold_n, n_moves)
+            resp_fold = resp[fold_mask]
+            eps_fold = self.data_epsilon[fold_mask]
+
+            n_1 = resp_fold.sum()
+            n_0 = len(resp_fold) - n_1
+            if n_0 == 0 or n_1 == 0:
                 continue
 
-            probs_at_pos = all_probs[move_indices]  # (n_at_pos, 4)
-            derivs_at_pos = self.derivs[:, pos, :]  # (n_seq, 4)
-            energies = derivs_at_pos @ probs_at_pos.T  # (n_seq, n_at_pos)
+            steps = np.where(resp_fold == 0, -1.0 / n_0, 1.0 / n_1)  # (fold_n,)
 
-            resp = self.response[:, 0]
-
-            for fi in range(self.num_folds):
-                fold_mask = mask if self.num_folds == 1 else mask & (self.folds == fi)
-
-                e_fold = energies[fold_mask]  # (fold_n, n_at_pos)
-                resp_fold = resp[fold_mask]
-                eps_fold = self.data_epsilon[fold_mask]
-
-                n_1 = resp_fold.sum()
-                n_0 = len(resp_fold) - n_1
-                if n_0 == 0 or n_1 == 0:
-                    continue
-
-                # Vectorized KS for all moves at this position
-                # Precompute step increments from response
-                steps = np.where(resp_fold == 0, -1.0 / n_0, 1.0 / n_1)  # (fold_n,)
-
-                for mi_idx, mi in enumerate(move_indices):
-                    vals = -(e_fold[:, mi_idx] * (1 + eps_fold))
-                    order = np.argsort(vals)
-                    sorted_steps = steps[order]
-                    cumsum = np.cumsum(sorted_steps)
-                    scores[fi, mi] = cumsum.max()
+            for mi in range(n_moves):
+                vals = -(e_fold[:, mi] * (1 + eps_fold))
+                order = np.argsort(vals)
+                cumsum = np.cumsum(steps[order])
+                scores[fi, mi] = cumsum.max()
 
         return scores
 
@@ -937,35 +911,35 @@ class _PWMLRegression:
         best_spat_bin = -1
         best_spat_diff = 0.0
 
+        # Pre-compute base energy vector once instead of recomputing per probe
+        mask = self.train_mask
+        base_energies = self.spat_derivs @ self.spat_factors  # (n_seq,)
+        step = self._spat_factor_step
+
         for spat_bin in range(self.spat_bins_num):
-            # Try +step
-            self.spat_factors[spat_bin] += self._spat_factor_step
-            score_plus = self.compute_cur_spat_score()
+            col = self.spat_derivs[:, spat_bin]
+
+            # Try +step: energy = base + step * col
+            energies_plus = base_energies + step * col
+            score_plus = self._score_spat_energies(energies_plus, mask)
             current_best = best_spat_score
-            current_diff = self._spat_factor_step
+            current_diff = step
 
             if score_plus > current_best:
                 current_best = score_plus
             else:
-                # Try -step
-                self.spat_factors[spat_bin] -= 2 * self._spat_factor_step
-                if self.spat_factors[spat_bin] >= 0:
-                    score_minus = self.compute_cur_spat_score()
+                # Try -step: energy = base - step * col
+                if self.spat_factors[spat_bin] - step >= 0:
+                    energies_minus = base_energies - step * col
+                    score_minus = self._score_spat_energies(energies_minus, mask)
                     if score_minus > current_best:
                         current_best = score_minus
-                        current_diff = -self._spat_factor_step
-                # Restore
-                self.spat_factors[spat_bin] += self._spat_factor_step
+                        current_diff = -step
 
             if current_best > best_spat_score:
                 best_spat_score = current_best
                 best_spat_bin = spat_bin
                 best_spat_diff = current_diff
-
-            # Restore the factor (we only changed it for evaluation)
-            # Actually, looking at C++ more carefully: check_spat_bin restores
-            # the factor after each probe.  The code above does this correctly
-            # via the += / -= pattern.
 
         if best_spat_score > self.cur_score:
             if self.verbose:
@@ -974,6 +948,53 @@ class _PWMLRegression:
             # Normalise
             self.spat_factors /= 1 + best_spat_diff
             self.cur_score = best_spat_score
+
+    def _score_spat_energies(self, energies: np.ndarray, mask: np.ndarray) -> float:
+        """Score pre-computed spatial energies."""
+        if self.score_metric == "r2":
+            return self._score_spat_energies_r2(energies, mask)
+        return self._score_spat_energies_ks(energies, mask)
+
+    def _score_spat_energies_r2(self, energies: np.ndarray, mask: np.ndarray) -> float:
+        """R2 score from spatial energies."""
+        if self.log_energy:
+            e = np.where(mask, np.log(energies + self.energy_epsilon), 0.0)
+        else:
+            e = np.where(mask, energies, 0.0)
+
+        train_e = e[mask]
+        n = self.train_n
+        ex = train_e.sum() / n
+        ex2 = (train_e * train_e).sum() / n
+        pred_var = ex2 - ex * ex
+
+        tot_r2 = 0.0
+        for rd in range(self.rdim):
+            resp_vals = self.response[mask, rd]
+            xy = (train_e * resp_vals).sum() / n
+            cov = xy - ex * self.data_avg[rd]
+            denom = pred_var * self.data_var[rd]
+            if denom > 0:
+                tot_r2 += cov * cov / denom
+        return tot_r2
+
+    def _score_spat_energies_ks(self, energies: np.ndarray, mask: np.ndarray) -> float:
+        """KS score from spatial energies."""
+        train_idx = np.where(mask)[0]
+        train_e = energies[train_idx]
+        train_r = self.response[train_idx, 0]
+        eps = self.data_epsilon[train_idx]
+
+        sort_keys = -train_e * (1 + eps)
+        order = np.argsort(sort_keys)
+
+        n_0 = float(self.train_n - self.ncat)
+        n_1 = float(self.ncat)
+        if n_0 == 0 or n_1 == 0:
+            return 0.0
+
+        steps = np.where(train_r == 0, -1.0 / n_0, 1.0 / n_1)
+        return float(np.cumsum(steps[order]).max())
 
     # ── Main optimisation loop ────────────────────────────────────────
 
