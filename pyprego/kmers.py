@@ -24,6 +24,12 @@ try:
 except (ImportError, AttributeError):
     _kmer_matrix_c = None
 
+# Try importing C extension for fast k-mer screening
+try:
+    from pyprego._pyprego import screen_kmers as _screen_kmers_c
+except (ImportError, AttributeError):
+    _screen_kmers_c = None
+
 # Powers of 4 for base-4 integer hashing of k-mers
 _BASE4_CHARS = {"A": 0, "C": 1, "G": 2, "T": 3}
 
@@ -337,6 +343,38 @@ def screen_kmers(
         raise ValueError(f"Number of sequences ({n_seqs}) != number of response rows ({response.shape[0]})")
 
     n_resp = response.shape[1]
+
+    # ── Fast C extension path (pure and gapped k-mers) ──
+    if (
+        _screen_kmers_c is not None
+        and kmer_len is not None
+        and kmers is None
+        and seed is None
+    ):
+        try:
+            encoded = encode_sequences_fast(
+                [s.upper() if isinstance(s, str) else str(s) for s in (sequences.tolist() if isinstance(sequences, np.ndarray) else sequences)]
+            )
+            encoded = np.ascontiguousarray(encoded)
+            response_c = np.ascontiguousarray(response)
+            names, max_r2_arr, corr_arr, avg_n_arr, avg_var_arr = _screen_kmers_c(
+                encoded, response_c, kmer_len, min_cor, min_gap, max_gap
+            )
+            if len(names) == 0:
+                cols = ["kmer", "max_r2", "avg_n", "avg_var"] + resp_names
+                return pd.DataFrame(columns=cols)
+            result_data = {
+                "kmer": names,
+                "max_r2": max_r2_arr,
+                "avg_n": avg_n_arr,
+                "avg_var": avg_var_arr,
+            }
+            for ri in range(n_resp):
+                result_data[resp_names[ri]] = corr_arr[:, ri]
+            df = pd.DataFrame(result_data)
+            return df.sort_values("max_r2", ascending=False).reset_index(drop=True)
+        except Exception:
+            pass  # fall through to Python implementation
 
     # Build k-mer count matrix
     if kmers is not None:

@@ -43,6 +43,9 @@ extern PyObject *pyprego_choose_best_move(PyObject *self, PyObject *args);
 // Defined in dinuc_ops.cpp
 extern PyObject *pyprego_calc_sequences_dinucs(PyObject *self, PyObject *args);
 
+// Defined in screen_kmer_ops.cpp
+extern PyObject *pyprego_screen_kmers(PyObject *self, PyObject *args);
+
 // ---------------------------------------------------------------------------
 // Method table
 // ---------------------------------------------------------------------------
@@ -61,6 +64,10 @@ static PyMethodDef module_methods[] = {
     {"calc_sequences_dinucs", pyprego_calc_sequences_dinucs, METH_VARARGS,
      "calc_sequences_dinucs(sequences: list[str]) -> ndarray[int64, (N, 16)]\n"
      "Count dinucleotide occurrences in each sequence (C++ with OpenMP)."},
+    {"screen_kmers", pyprego_screen_kmers, METH_VARARGS,
+     "screen_kmers(sequences, response, kmer_length, min_cor, min_gap=0, max_gap=0) -> tuple\n"
+     "Screen k-mers (pure and gapped) for correlation with response.\n"
+     "Returns (names, max_r2, correlations, avg_n, avg_var)."},
     {NULL, NULL, 0, NULL}
 };
 
