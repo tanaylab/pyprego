@@ -36,6 +36,7 @@ extern PyObject *pyprego_kmer_matrix(PyObject *self, PyObject *args);
 
 // Defined in energy_ops.cpp
 extern PyObject *pyprego_init_energies(PyObject *self, PyObject *args);
+extern PyObject *pyprego_batch_extract_energies(PyObject *self, PyObject *args);
 
 // Defined in score_ops.cpp
 extern PyObject *pyprego_choose_best_move(PyObject *self, PyObject *args);
@@ -58,6 +59,10 @@ static PyMethodDef module_methods[] = {
      "init_energies(encoded, nuc_factors, spat_factors, train_mask, "
      "spat_bin_size, bidirect, symmetrize_spat, derivs, spat_derivs) -> None\n"
      "Compute PSSM energy derivatives for all sequences (C++ with OpenMP)."},
+    {"batch_extract_energies", pyprego_batch_extract_energies, METH_VARARGS,
+     "batch_extract_energies(encoded, log_pssm_list, spat_factors_list, "
+     "spat_bin_sizes, bidirect, output) -> None\n"
+     "Batch compute PWM energies for multiple motifs (C++ with OpenMP)."},
     {"choose_best_move", pyprego_choose_best_move, METH_VARARGS,
      "choose_best_move(derivs, nuc_factors, response, ...) -> (best_pos, best_step, scores)\n"
      "Evaluate all candidate moves and return the best one (C++)."},

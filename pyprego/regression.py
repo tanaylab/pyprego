@@ -1600,6 +1600,7 @@ def regress_pwm(
     match_with_db: bool = False,
     motif_db: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
     alternative: str = "less",
+    kmer_sequence_length: int | None = None,
 ) -> RegressionResult:
     """Perform PWM regression to discover a motif in DNA sequences.
 
@@ -1771,6 +1772,7 @@ def regress_pwm(
             core_kwargs=core_kwargs,
             seed=seed,
             verbose=verbose,
+            kmer_sequence_length=kmer_sequence_length,
         )
 
     # Database matching
@@ -1804,6 +1806,7 @@ def _regress_pwm_with_kmer_screen(
     core_kwargs: dict,
     seed: int | None,
     verbose: bool,
+    kmer_sequence_length: int | None = None,
 ) -> RegressionResult:
     """Run regress_pwm with a single best k-mer from screening."""
     from .kmers import screen_kmers
@@ -1826,6 +1829,7 @@ def _regress_pwm_with_kmer_screen(
         min_gap=min_gap,
         max_gap=max_gap,
         min_cor=min_kmer_cor,
+        kmer_sequence_length=kmer_sequence_length,
     )
 
     if len(kmers_df) > 0:
@@ -1839,6 +1843,7 @@ def _regress_pwm_with_kmer_screen(
             min_gap=min_gap,
             max_gap=max_gap,
             min_cor=min_kmer_cor / 2,
+            kmer_sequence_length=kmer_sequence_length,
         )
         if len(kmers_df) > 0:
             best_kmer = kmers_df.loc[kmers_df["max_r2"].abs().idxmax(), "kmer"]

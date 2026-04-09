@@ -218,6 +218,87 @@ def _log_sum_exp(x: np.ndarray, axis: int = -1) -> np.ndarray:
     return result.squeeze(axis=axis)
 
 
+def batch_extract_energies(
+    encoded: np.ndarray,
+    log_pssm_list: list[np.ndarray],
+    spat_factors_list: list[np.ndarray],
+    spat_bin_sizes: list[int] | np.ndarray,
+    bidirect: bool = True,
+) -> np.ndarray:
+    """Batch compute PWM energies for multiple motifs via C++.
+
+    Parameters
+    ----------
+    encoded : np.ndarray
+        (N, L) int8 encoded sequences.
+    log_pssm_list : list[np.ndarray]
+        List of M arrays, each (K_m, 4) float64 log-probability PSSMs.
+    spat_factors_list : list[np.ndarray]
+        List of M arrays, each (B_m,) float64 raw spatial factors.
+    spat_bin_sizes : list[int] | np.ndarray
+        Bin size per motif.
+    bidirect : bool
+        Score both orientations.
+
+    Returns
+    -------
+    np.ndarray
+        (N, M) float64 energy scores.
+    """
+    N = encoded.shape[0]
+    M = len(log_pssm_list)
+    output = np.empty((N, M), dtype=np.float64)
+
+    # Ensure arrays are contiguous and correct dtype
+    c_log_pssm_list = [np.ascontiguousarray(p, dtype=np.float64) for p in log_pssm_list]
+    c_spat_list = [np.ascontiguousarray(s, dtype=np.float64) for s in spat_factors_list]
+    c_bin_sizes = np.asarray(spat_bin_sizes, dtype=np.int32)
+
+    try:
+        from pyprego._pyprego import batch_extract_energies as _batch_c
+
+        _batch_c(
+            encoded,
+            c_log_pssm_list,
+            c_spat_list,
+            c_bin_sizes,
+            int(bidirect),
+            output,
+        )
+    except (ImportError, AttributeError):
+        # Fallback: pure-Python loop using existing scoring functions
+        for m_idx in range(M):
+            log_pssm = c_log_pssm_list[m_idx]
+            spat_facs = c_spat_list[m_idx]
+            bin_size = int(c_bin_sizes[m_idx])
+            K = log_pssm.shape[0]
+            L = encoded.shape[1]
+            n_windows = L - K + 1
+
+            if n_windows <= 0:
+                output[:, m_idx] = -np.inf
+                continue
+
+            avg_log_prob = log_pssm.mean(axis=1)
+
+            fwd_scores = _score_windows(encoded, log_pssm, avg_log_prob, reverse_complement=False)
+            spat_log = np.log(spat_facs)
+            window_bins = np.arange(n_windows) // bin_size
+            window_bins = np.clip(window_bins, 0, len(spat_facs) - 1)
+            spat_weights = spat_log[window_bins]
+            fwd_scores = fwd_scores + spat_weights[np.newaxis, :]
+
+            if bidirect:
+                rc_scores = _score_windows(encoded, log_pssm, avg_log_prob, reverse_complement=True)
+                rc_scores = rc_scores + spat_weights[np.newaxis, :]
+                all_scores = np.concatenate([fwd_scores, rc_scores], axis=1)
+                output[:, m_idx] = _log_sum_exp(all_scores, axis=1)
+            else:
+                output[:, m_idx] = _log_sum_exp(fwd_scores, axis=1)
+
+    return output
+
+
 def compute_pwm(
     sequences: list[str] | np.ndarray,
     pssm: pd.DataFrame,

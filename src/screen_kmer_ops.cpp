@@ -275,7 +275,7 @@ PyObject *pyprego_screen_kmers(PyObject * /*self*/, PyObject *args)
                     if (b < 0 || b > 3) { valid = false; break; }
                     h = (h << 2) | b;
                 }
-                if (valid) scratch[h]++;
+                if (valid && h >= 0 && h < n_total) scratch[h]++;
 
                 for (int w = 1; w < num_wins; ++w) {
                     int b_new = seq[w + kmer_length - 1];
@@ -291,10 +291,10 @@ PyObject *pyprego_screen_kmers(PyObject * /*self*/, PyObject *args)
                             if (b < 0 || b > 3) { valid = false; break; }
                             h = (h << 2) | b;
                         }
-                        if (valid) scratch[h]++;
+                        if (valid && h >= 0 && h < n_total) scratch[h]++;
                     } else {
                         h = ((h << 2) | b_new) & pure_mask;
-                        scratch[h]++;
+                        if (h >= 0 && h < n_total) scratch[h]++;
                     }
                 }
             }
@@ -320,7 +320,9 @@ PyObject *pyprego_screen_kmers(PyObject * /*self*/, PyObject *args)
                             fh = (fh << 2) | b;
                         }
                         if (fvalid) {
-                            scratch[gp.offset + fh]++;
+                            int idx = gp.offset + fh;
+                            if (idx >= 0 && idx < n_total)
+                                scratch[idx]++;
                         }
                     }
                 }

@@ -20,7 +20,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 
-from .compute import compute_pwm
+from .compute import (
+    _compute_log_pssm,
+    _encode_sequences,
+    _prepare_pssm,
+    batch_extract_energies,
+    compute_pwm,
+)
 from .types import NUCLEOTIDES
 
 if TYPE_CHECKING:
@@ -544,15 +550,84 @@ def extract_pwm(
     if motif_db.prior != prior:
         motif_db = set_prior(motif_db, prior)
 
-    # Convert back to individual PSSMs and call compute_pwm for each
-    df = motif_db_to_dataframe(motif_db)
     motif_names = motif_db.names()
 
+    # ---- Handle spat_min / spat_max by trimming sequences ----
+    sequences_upper = [s.upper() for s in sequences]
+    seq_len = len(sequences_upper[0])
+
+    s_min = spat_min
+    s_max = spat_max
+    if s_min is None and motif_db.spat_min is not None:
+        s_min = int(motif_db.spat_min)
+    if s_max is None and motif_db.spat_max is not None:
+        s_max = int(motif_db.spat_max)
+    if s_min is None:
+        s_min = 1
+    if s_max is None:
+        s_max = seq_len
+
+    if not (s_min == 1 and s_max == seq_len):
+        sequences_upper = [s[s_min - 1 : s_max] for s in sequences_upper]
+        seq_len = len(sequences_upper[0])
+
+    # ---- Use batch C++ path for logSumExp ----
+    if func == "logSumExp":
+        # Convert MotifDB back to individual PSSMs
+        df = motif_db_to_dataframe(motif_db)
+
+        # Encode sequences once
+        encoded = _encode_sequences(sequences_upper)
+
+        # Build per-motif log_pssm and spat_factors lists
+        log_pssm_list: list[np.ndarray] = []
+        spat_factors_list: list[np.ndarray] = []
+        spat_bin_sizes_list: list[int] = []
+
+        for idx, name in enumerate(motif_names):
+            motif_pssm = df[df["motif"] == name][["A", "C", "G", "T"]].values
+            prob = motif_pssm.copy()
+            # Re-apply normalization with prior (matching _prepare_pssm)
+            row_sums = prob.sum(axis=1, keepdims=True)
+            row_sums[row_sums == 0] = 1.0
+            prob = prob / row_sums
+            if prior > 0:
+                prob = prob + prior
+                row_sums = prob.sum(axis=1, keepdims=True)
+                prob = prob / row_sums
+            log_pssm = _compute_log_pssm(prob)
+            log_pssm_list.append(log_pssm)
+
+            # Spatial factors for this motif
+            spat_facs = motif_db.spat_factors[idx, :]
+            if len(spat_facs) > 1 or motif_db.spat_bin_size > 1:
+                bins = np.arange(len(spat_facs)) * motif_db.spat_bin_size
+                bin_diffs = np.diff(bins)
+                bin_size = seq_len if len(bin_diffs) == 0 else int(bin_diffs[0])
+            else:
+                spat_facs = np.array([1.0])
+                bin_size = seq_len
+
+            spat_factors_list.append(spat_facs)
+            spat_bin_sizes_list.append(bin_size)
+
+        # Call batch function
+        result_mat = batch_extract_energies(
+            encoded,
+            log_pssm_list,
+            spat_factors_list,
+            spat_bin_sizes_list,
+            bidirect=bidirect,
+        )
+
+        return pd.DataFrame(result_mat, columns=motif_names)
+
+    # ---- Fallback for func="max": use per-motif compute_pwm ----
+    df = motif_db_to_dataframe(motif_db)
     results: dict[str, np.ndarray] = {}
     for name in motif_names:
         motif_pssm = df[df["motif"] == name][["pos", "A", "C", "G", "T"]].copy()
 
-        # Get spatial model for this motif
         idx = motif_names.index(name)
         spat_facs = motif_db.spat_factors[idx, :]
         if len(spat_facs) > 1 or motif_db.spat_bin_size > 1:
@@ -561,19 +636,12 @@ def extract_pwm(
         else:
             spat = None
 
-        s_min = spat_min
-        s_max = spat_max
-        if s_min is None and motif_db.spat_min is not None:
-            s_min = int(motif_db.spat_min)
-        if s_max is None and motif_db.spat_max is not None:
-            s_max = int(motif_db.spat_max)
-
         scores = compute_pwm(
-            sequences,
+            sequences_upper,
             motif_pssm,
             spat=spat,
-            spat_min=s_min if s_min is not None else 1,
-            spat_max=s_max,
+            spat_min=1,  # already trimmed
+            spat_max=None,
             bidirect=bidirect,
             prior=prior,
             func=func,

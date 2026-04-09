@@ -279,6 +279,7 @@ def screen_kmers(
     min_gap: int = 0,
     seed: int | None = None,
     min_cor: float = 0.0,
+    kmer_sequence_length: int | None = None,
 ) -> pd.DataFrame:
     """Screen k-mers for correlation with response variable(s).
 
@@ -305,6 +306,11 @@ def screen_kmers(
     min_cor : float
         Minimum absolute correlation to include in the result. Default 0.0
         (include all).
+    kmer_sequence_length : int | None
+        If given, use only the central *kmer_sequence_length* bp of each
+        sequence for k-mer screening.  Matches R prego's
+        ``kmer_sequence_length`` parameter.  The k-mer length itself
+        (``kmer_len``) is unaffected.
 
     Returns
     -------
@@ -330,6 +336,19 @@ def screen_kmers(
 
     if kmers is None and kmer_len is None:
         raise ValueError("Either kmer_len or kmers must be provided")
+
+    # Truncate sequences to central region (matching R's kmer_sequence_length)
+    if kmer_sequence_length is not None:
+        seq_list = sequences.tolist() if isinstance(sequences, np.ndarray) else list(sequences)
+        truncated = []
+        for s in seq_list:
+            slen = len(s)
+            if kmer_sequence_length < slen:
+                start = (slen - kmer_sequence_length) // 2
+                truncated.append(s[start : start + kmer_sequence_length])
+            else:
+                truncated.append(s)
+        sequences = truncated
 
     response = np.asarray(response, dtype=np.float64)
     if response.ndim == 1:

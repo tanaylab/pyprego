@@ -249,3 +249,215 @@ PyObject *pyprego_init_energies(PyObject * /*self*/, PyObject *args)
 
     Py_RETURN_NONE;
 }
+
+
+// ---------------------------------------------------------------------------
+// pyprego_batch_extract_energies
+// ---------------------------------------------------------------------------
+// Python signature:
+//   batch_extract_energies(encoded, log_pssm_list, spat_factors_list,
+//                          spat_bin_sizes, bidirect, output) -> None
+//
+// Parameters:
+//   encoded          : ndarray[int8, (N, L)]       - pre-encoded sequences
+//   log_pssm_list    : Python list of M ndarrays, each (K_m, 4) float64
+//   spat_factors_list: Python list of M ndarrays, each (B_m,) float64 (RAW, not log)
+//   spat_bin_sizes   : ndarray[int32, (M,)]        - bin size per motif
+//   bidirect         : int                          - 1 if bidirectional
+//   output           : ndarray[float64, (N, M)]     - pre-allocated output (filled in-place)
+
+PyObject *pyprego_batch_extract_energies(PyObject * /*self*/, PyObject *args)
+{
+    PyArrayObject *py_encoded = nullptr;
+    PyObject *py_log_pssm_list = nullptr;
+    PyObject *py_spat_factors_list = nullptr;
+    PyArrayObject *py_spat_bin_sizes = nullptr;
+    int bidirect = 0;
+    PyArrayObject *py_output = nullptr;
+
+    if (!PyArg_ParseTuple(args, "O!OOO!iO!",
+                          &PyArray_Type, &py_encoded,
+                          &py_log_pssm_list,
+                          &py_spat_factors_list,
+                          &PyArray_Type, &py_spat_bin_sizes,
+                          &bidirect,
+                          &PyArray_Type, &py_output))
+        return NULL;
+
+    // Validate encoded
+    if (PyArray_NDIM(py_encoded) != 2) {
+        PyErr_SetString(PyExc_ValueError, "encoded must be 2-D (N, L)");
+        return NULL;
+    }
+    if (PyArray_NDIM(py_output) != 2) {
+        PyErr_SetString(PyExc_ValueError, "output must be 2-D (N, M)");
+        return NULL;
+    }
+    if (!PyList_Check(py_log_pssm_list)) {
+        PyErr_SetString(PyExc_TypeError, "log_pssm_list must be a Python list");
+        return NULL;
+    }
+    if (!PyList_Check(py_spat_factors_list)) {
+        PyErr_SetString(PyExc_TypeError, "spat_factors_list must be a Python list");
+        return NULL;
+    }
+
+    const npy_intp N = PyArray_DIM(py_encoded, 0);
+    const npy_intp L = PyArray_DIM(py_encoded, 1);
+    const Py_ssize_t M = PyList_Size(py_log_pssm_list);
+
+    if (PyList_Size(py_spat_factors_list) != M) {
+        PyErr_SetString(PyExc_ValueError, "spat_factors_list length must match log_pssm_list length");
+        return NULL;
+    }
+    if (PyArray_DIM(py_output, 0) != N || PyArray_DIM(py_output, 1) != M) {
+        PyErr_SetString(PyExc_ValueError, "output shape must be (N, M)");
+        return NULL;
+    }
+
+    // ---- Unpack all motif data into C++ vectors for thread-safe access ----
+
+    // Per-motif: log_pssm pointer, K, avg_log_prob per position,
+    //            spat_factors pointer (raw), n_bins, bin_size
+    struct MotifInfo {
+        const double *log_pssm;    // (K, 4) row-major
+        npy_intp K;
+        std::vector<double> avg_log_prob;  // (K,) mean of log_pssm row
+        const double *spat_factors;        // raw spatial factors
+        npy_intp n_bins;
+        int bin_size;
+    };
+
+    std::vector<MotifInfo> motifs(M);
+    // Keep references to borrowed arrays to prevent GC during computation
+    // (The list items are borrowed references, but the list itself is alive
+    //  for the duration of this call, so this is safe.)
+
+    const int *spat_bin_sizes_ptr = (const int *)PyArray_DATA(py_spat_bin_sizes);
+
+    for (Py_ssize_t m = 0; m < M; ++m) {
+        PyArrayObject *pssm_arr = (PyArrayObject *)PyList_GET_ITEM(py_log_pssm_list, m);
+        PyArrayObject *spat_arr = (PyArrayObject *)PyList_GET_ITEM(py_spat_factors_list, m);
+
+        if (PyArray_NDIM(pssm_arr) != 2 || PyArray_DIM(pssm_arr, 1) != 4) {
+            PyErr_Format(PyExc_ValueError,
+                "log_pssm_list[%zd] must be 2-D with shape (K, 4)", m);
+            return NULL;
+        }
+        if (PyArray_NDIM(spat_arr) != 1) {
+            PyErr_Format(PyExc_ValueError,
+                "spat_factors_list[%zd] must be 1-D", m);
+            return NULL;
+        }
+
+        MotifInfo &mi = motifs[m];
+        mi.log_pssm = (const double *)PyArray_DATA(pssm_arr);
+        mi.K = PyArray_DIM(pssm_arr, 0);
+        mi.spat_factors = (const double *)PyArray_DATA(spat_arr);
+        mi.n_bins = PyArray_DIM(spat_arr, 0);
+        mi.bin_size = spat_bin_sizes_ptr[m];
+
+        // Precompute avg_log_prob per position (for N-base handling)
+        mi.avg_log_prob.resize(mi.K);
+        for (npy_intp d = 0; d < mi.K; ++d) {
+            double sum = 0.0;
+            for (int nuc = 0; nuc < 4; ++nuc) {
+                sum += mi.log_pssm[d * 4 + nuc];
+            }
+            mi.avg_log_prob[d] = sum / 4.0;
+        }
+    }
+
+    // Get encoded data pointer and strides
+    const int8_t *encoded = (const int8_t *)PyArray_DATA(py_encoded);
+    const npy_intp enc_stride0 = PyArray_STRIDE(py_encoded, 0);
+    const npy_intp enc_stride1 = PyArray_STRIDE(py_encoded, 1);
+
+    // Output: (N, M) float64, C-contiguous expected but use strides to be safe
+    double *output = (double *)PyArray_DATA(py_output);
+    const npy_intp out_stride0 = PyArray_STRIDE(py_output, 0);
+    const npy_intp out_stride1 = PyArray_STRIDE(py_output, 1);
+
+    const char *enc_base = (const char *)encoded;
+    char *out_base = (char *)output;
+
+    // ---- Main computation: parallel over sequences ----
+    #pragma omp parallel for schedule(dynamic, 64)
+    for (npy_intp seq = 0; seq < N; ++seq) {
+        const char *enc_seq = enc_base + seq * enc_stride0;
+
+        for (Py_ssize_t m = 0; m < M; ++m) {
+            const MotifInfo &mi = motifs[m];
+            const npy_intp K = mi.K;
+            const npy_intp num_wins = L - K + 1;
+
+            if (num_wins <= 0) {
+                *(double *)(out_base + seq * out_stride0 + m * out_stride1) = -std::numeric_limits<double>::infinity();
+                continue;
+            }
+
+            // Allocate scores buffer: up to num_wins * (bidirect ? 2 : 1) entries
+            const int n_scores_max = (int)(num_wins * (bidirect ? 2 : 1));
+            // Use thread-local stack allocation for small motifs, heap for large
+            std::vector<double> scores_buf(n_scores_max);
+            int n_scores = 0;
+
+            // Precompute spatial log factors and bin mapping for this motif
+            // (done per-motif, could be precomputed outside the seq loop but
+            //  the cost is negligible compared to window scoring)
+
+            for (npy_intp w = 0; w < num_wins; ++w) {
+                // Spatial bin
+                int sb = (int)(w / mi.bin_size);
+                if (sb >= mi.n_bins) sb = (int)(mi.n_bins - 1);
+                if (sb < 0) sb = 0;
+                double log_spat = std::log(mi.spat_factors[sb]);
+
+                // ---- Forward strand ----
+                double log_score = 0.0;
+                for (npy_intp d = 0; d < K; ++d) {
+                    int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
+                    if (base >= 0 && base <= 3) {
+                        log_score += mi.log_pssm[d * 4 + base];
+                    } else {
+                        // N base: use average log prob
+                        log_score += mi.avg_log_prob[d];
+                    }
+                }
+                log_score += log_spat;
+                scores_buf[n_scores++] = log_score;
+
+                // ---- Reverse complement ----
+                if (bidirect) {
+                    double rc_log_score = 0.0;
+                    for (npy_intp d = 0; d < K; ++d) {
+                        int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
+                        if (base >= 0 && base <= 3) {
+                            int comp = 3 - base;
+                            npy_intp pssm_pos = K - 1 - d;
+                            rc_log_score += mi.log_pssm[pssm_pos * 4 + comp];
+                        } else {
+                            // N base: use average log prob at RC position
+                            npy_intp pssm_pos = K - 1 - d;
+                            rc_log_score += mi.avg_log_prob[pssm_pos];
+                        }
+                    }
+                    rc_log_score += log_spat;
+                    scores_buf[n_scores++] = rc_log_score;
+                }
+            }
+
+            // logSumExp over all scores
+            double result;
+            if (n_scores == 0) {
+                result = -std::numeric_limits<double>::infinity();
+            } else {
+                result = log_sum_exp(scores_buf.data(), n_scores);
+            }
+
+            *(double *)(out_base + seq * out_stride0 + m * out_stride1) = result;
+        }
+    }
+
+    Py_RETURN_NONE;
+}

@@ -150,7 +150,7 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
             }
             int mask = n_kmers - 1;  // 4^k - 1
 
-            if (valid) {
+            if (valid && h >= 0 && h < n_kmers) {
                 row[h]++;
             }
 
@@ -168,7 +168,7 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
                         if (b < 0) { valid = false; break; }
                         h = (h << 2) | b;
                     }
-                    if (valid) row[h]++;
+                    if (valid && h >= 0 && h < n_kmers) row[h]++;
                 } else if (!valid) {
                     // Previous window was invalid; recompute
                     h = 0;
@@ -178,11 +178,11 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
                         if (b < 0) { valid = false; break; }
                         h = (h << 2) | b;
                     }
-                    if (valid) row[h]++;
+                    if (valid && h >= 0 && h < n_kmers) row[h]++;
                 } else {
                     // Rolling hash update
                     h = ((h << 2) | b_new) & mask;
-                    row[h]++;
+                    if (h >= 0 && h < n_kmers) row[h]++;
                 }
             }
         }
