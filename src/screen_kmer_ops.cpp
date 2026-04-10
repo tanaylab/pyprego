@@ -248,6 +248,9 @@ PyObject *pyprego_screen_kmers(PyObject * /*self*/, PyObject *args)
     std::vector<std::vector<double>> thr_cross_prod(n_threads, std::vector<double>((size_t)n_total * n_resp, 0.0));
     std::vector<std::vector<int32_t>> thr_scratch(n_threads, std::vector<int32_t>(n_total, 0));
 
+    // Release GIL for compute-intensive OMP region + post-processing
+    PyThreadState *_save_thread = PyEval_SaveThread();
+
     #pragma omp parallel
     {
         int tid = 0;
@@ -400,6 +403,9 @@ PyObject *pyprego_screen_kmers(PyObject * /*self*/, PyObject *args)
         valid_indices.push_back(ki);
     }
     int n_valid = (int)valid_indices.size();
+
+    // Re-acquire GIL for Python API calls below
+    PyEval_RestoreThread(_save_thread);
 
     // ====================================================================
     // Build kmer name for each valid index

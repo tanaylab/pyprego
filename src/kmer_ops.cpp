@@ -130,6 +130,7 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
         int32_t *data = (int32_t *)PyArray_DATA(arr);
 
         // Parallel over sequences
+        { PyThreadState *_save = PyEval_SaveThread();
         #pragma omp parallel for schedule(dynamic, 64)
         for (Py_ssize_t si = 0; si < n_seqs; ++si) {
             const std::string &seq = seqs[si];
@@ -186,6 +187,7 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
                 }
             }
         }
+        PyEval_RestoreThread(_save); }
 
         // Build k-mer name list
         std::vector<std::string> kmer_names = generate_all_pure_kmers(k);
@@ -216,6 +218,7 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
     // Per-sequence maps (parallel)
     std::vector<std::unordered_map<std::string, int32_t>> per_seq_maps(n_seqs);
 
+    { PyThreadState *_save2 = PyEval_SaveThread();
     #pragma omp parallel for schedule(dynamic, 64)
     for (Py_ssize_t si = 0; si < n_seqs; ++si) {
         const std::string &seq = seqs[si];
@@ -262,6 +265,7 @@ PyObject *pyprego_kmer_matrix(PyObject * /*self*/, PyObject *args)
             }
         }
     }
+    PyEval_RestoreThread(_save2); }
 
     // Collect all unique k-mer names and assign column indices.
     // Use the SAME ordering as the Python generate_kmers() function:

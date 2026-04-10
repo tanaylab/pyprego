@@ -144,108 +144,152 @@ PyObject *pyprego_init_energies(PyObject * /*self*/, PyObject *args)
         spat_bins[w] = b;
     }
 
-    // Helper macros for strided access
-    // encoded[seq, pos] => *(int8_t*)((char*)encoded_base + seq*enc_stride0 + pos*enc_stride1)
-    // nuc_factors[d, nuc] => *(double*)((char*)nuc_factors_base + d*nf_stride0 + nuc*nf_stride1)
-    // derivs[seq, d, nuc] => *(double*)((char*)derivs_base + seq*d_stride0 + d*d_stride1 + nuc*d_stride2)
-    // spat_derivs[seq, b] => *(double*)((char*)spat_derivs_base + seq*sd_stride0 + b*sd_stride1)
+    // Copy nuc_factors into a small contiguous buffer for cache-friendly access.
+    // nuc_factors is (K, 4) — typically K ≤ 20, so this fits in L1 cache.
+    std::vector<double> nf_contig(K * 4);
+    for (npy_intp d = 0; d < K; ++d) {
+        for (int b = 0; b < 4; ++b) {
+            nf_contig[d * 4 + b] = *(const double *)((const char *)nuc_factors + d * nf_stride0 + b * nf_stride1);
+        }
+    }
+    const double *nf = nf_contig.data();
 
-    const char *encoded_base = (const char *)encoded;
-    const char *nf_base = (const char *)nuc_factors;
-    char *derivs_base = (char *)derivs;
-    char *sd_base = (char *)spat_derivs;
+    // Check if key arrays are C-contiguous for a fast path.
+    const bool enc_contig = (enc_stride1 == 1);
+    const bool d_contig = (d_stride2 == (npy_intp)sizeof(double) &&
+                           d_stride1 == 4 * (npy_intp)sizeof(double));
+    const bool sd_contig = (sd_stride1 == (npy_intp)sizeof(double));
 
-    // We'll use contiguous data access for better performance.
-    // Check if arrays are C-contiguous, and if so use direct indexing.
-    // For now, use stride-based access for correctness.
+    const int *sb_ptr = spat_bins.data();
+
+    // Release the GIL for the compute-intensive OMP region.
+    Py_BEGIN_ALLOW_THREADS;
 
     #pragma omp parallel for schedule(dynamic, 32)
     for (npy_intp seq = 0; seq < N; ++seq) {
-        // Check train_mask
         if (!train_mask[seq]) continue;
 
-        // Pointer offsets for this sequence
-        const char *enc_seq = encoded_base + seq * enc_stride0;
-        char *deriv_seq = derivs_base + seq * d_stride0;
-        char *sd_seq = sd_base + seq * sd_stride0;
+        // Per-sequence output pointers
+        double *d_seq = derivs + seq * (d_stride0 / (npy_intp)sizeof(double));
+        double *sd_seq = spat_derivs + seq * (sd_stride0 / (npy_intp)sizeof(double));
 
-        // Forward strand
-        for (npy_intp w = 0; w < num_wins; ++w) {
-            // Compute product of nuc_factors for this window
-            double product = 1.0;
-            bool has_invalid = false;
+        if (enc_contig && d_contig && sd_contig) {
+            // ---- Fast path: all arrays C-contiguous ----
+            const int8_t *enc_row = (const int8_t *)encoded + seq * (enc_stride0 / 1);
 
-            for (npy_intp d = 0; d < K; ++d) {
-                int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
-                if (base < 0 || base > 3) {
-                    has_invalid = true;
-                    break;
-                }
-                double factor = *(const double *)(nf_base + d * nf_stride0 + base * nf_stride1);
-                product *= factor;
-            }
-
-            if (has_invalid || product == 0.0) continue;
-
-            // Accumulate spat_derivs (before spatial weighting)
-            int sb = spat_bins[w];
-            *(double *)(sd_seq + sb * sd_stride1) += product;
-
-            // Spatial weighted product
-            double weighted = product * spat_factors[sb];
-
-            // Accumulate derivatives
-            for (npy_intp d = 0; d < K; ++d) {
-                int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
-                double factor_d = *(const double *)(nf_base + d * nf_stride0 + base * nf_stride1);
-                double safe_factor = (factor_d > 0.0) ? factor_d : 1.0;
-                double contrib = weighted / safe_factor;
-                *(double *)(deriv_seq + d * d_stride1 + base * d_stride2) += contrib;
-            }
-        }
-
-        // Reverse complement strand
-        if (bidirect) {
+            // Forward strand
             for (npy_intp w = 0; w < num_wins; ++w) {
-                // RC: PSSM position K-1-d, complement of base at d
                 double product = 1.0;
                 bool has_invalid = false;
-
                 for (npy_intp d = 0; d < K; ++d) {
-                    int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
-                    if (base < 0 || base > 3) {
-                        has_invalid = true;
-                        break;
-                    }
-                    int comp = 3 - base;  // complement: A(0)<->T(3), C(1)<->G(2)
-                    npy_intp pssm_pos = K - 1 - d;
-                    double factor = *(const double *)(nf_base + pssm_pos * nf_stride0 + comp * nf_stride1);
-                    product *= factor;
+                    int8_t b = enc_row[w + d];
+                    if (b < 0 || b > 3) { has_invalid = true; break; }
+                    product *= nf[d * 4 + b];
                 }
-
                 if (has_invalid || product == 0.0) continue;
 
-                // Accumulate spat_derivs
-                int sb = spat_bins[w];
-                *(double *)(sd_seq + sb * sd_stride1) += product;
-
-                // Spatial weighted product
+                int sb = sb_ptr[w];
+                sd_seq[sb] += product;
                 double weighted = product * spat_factors[sb];
 
-                // Accumulate RC derivatives
-                // deriv[seq, K-1-d, complement(base[d])] += weighted / factor_at_d
+                for (npy_intp d = 0; d < K; ++d) {
+                    int8_t b = enc_row[w + d];
+                    double f = nf[d * 4 + b];
+                    double contrib = (f > 0.0) ? weighted / f : weighted;
+                    d_seq[d * 4 + b] += contrib;
+                }
+            }
+
+            // Reverse complement strand
+            if (bidirect) {
+                for (npy_intp w = 0; w < num_wins; ++w) {
+                    double product = 1.0;
+                    bool has_invalid = false;
+                    for (npy_intp d = 0; d < K; ++d) {
+                        int8_t b = enc_row[w + d];
+                        if (b < 0 || b > 3) { has_invalid = true; break; }
+                        int comp = 3 - b;
+                        npy_intp pp = K - 1 - d;
+                        product *= nf[pp * 4 + comp];
+                    }
+                    if (has_invalid || product == 0.0) continue;
+
+                    int sb = sb_ptr[w];
+                    sd_seq[sb] += product;
+                    double weighted = product * spat_factors[sb];
+
+                    for (npy_intp d = 0; d < K; ++d) {
+                        int8_t b = enc_row[w + d];
+                        int comp = 3 - b;
+                        npy_intp pp = K - 1 - d;
+                        double f = nf[pp * 4 + comp];
+                        double contrib = (f > 0.0) ? weighted / f : weighted;
+                        d_seq[pp * 4 + comp] += contrib;
+                    }
+                }
+            }
+        } else {
+            // ---- Strided fallback ----
+            const char *encoded_base = (const char *)encoded;
+            char *derivs_base = (char *)derivs;
+            char *sd_base = (char *)spat_derivs;
+            const char *enc_seq = encoded_base + seq * enc_stride0;
+            char *deriv_seq = derivs_base + seq * d_stride0;
+            char *sd_seq_s = sd_base + seq * sd_stride0;
+
+            for (npy_intp w = 0; w < num_wins; ++w) {
+                double product = 1.0;
+                bool has_invalid = false;
                 for (npy_intp d = 0; d < K; ++d) {
                     int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
-                    int comp = 3 - base;
-                    npy_intp pssm_pos = K - 1 - d;
-                    double factor_d = *(const double *)(nf_base + pssm_pos * nf_stride0 + comp * nf_stride1);
-                    double safe_factor = (factor_d > 0.0) ? factor_d : 1.0;
-                    double contrib = weighted / safe_factor;
-                    *(double *)(deriv_seq + pssm_pos * d_stride1 + comp * d_stride2) += contrib;
+                    if (base < 0 || base > 3) { has_invalid = true; break; }
+                    product *= nf[d * 4 + base];
+                }
+                if (has_invalid || product == 0.0) continue;
+
+                int sb = sb_ptr[w];
+                *(double *)(sd_seq_s + sb * sd_stride1) += product;
+                double weighted = product * spat_factors[sb];
+
+                for (npy_intp d = 0; d < K; ++d) {
+                    int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
+                    double f = nf[d * 4 + base];
+                    double contrib = (f > 0.0) ? weighted / f : weighted;
+                    *(double *)(deriv_seq + d * d_stride1 + base * d_stride2) += contrib;
+                }
+            }
+
+            if (bidirect) {
+                for (npy_intp w = 0; w < num_wins; ++w) {
+                    double product = 1.0;
+                    bool has_invalid = false;
+                    for (npy_intp d = 0; d < K; ++d) {
+                        int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
+                        if (base < 0 || base > 3) { has_invalid = true; break; }
+                        int comp = 3 - base;
+                        npy_intp pp = K - 1 - d;
+                        product *= nf[pp * 4 + comp];
+                    }
+                    if (has_invalid || product == 0.0) continue;
+
+                    int sb = sb_ptr[w];
+                    *(double *)(sd_seq_s + sb * sd_stride1) += product;
+                    double weighted = product * spat_factors[sb];
+
+                    for (npy_intp d = 0; d < K; ++d) {
+                        int8_t base = *(const int8_t *)(enc_seq + (w + d) * enc_stride1);
+                        int comp = 3 - base;
+                        npy_intp pp = K - 1 - d;
+                        double f = nf[pp * 4 + comp];
+                        double contrib = (f > 0.0) ? weighted / f : weighted;
+                        *(double *)(deriv_seq + pp * d_stride1 + comp * d_stride2) += contrib;
+                    }
                 }
             }
         }
     }
+
+    Py_END_ALLOW_THREADS;
 
     Py_RETURN_NONE;
 }
@@ -382,6 +426,8 @@ PyObject *pyprego_batch_extract_energies(PyObject * /*self*/, PyObject *args)
     char *out_base = (char *)output;
 
     // ---- Main computation: parallel over sequences ----
+    Py_BEGIN_ALLOW_THREADS;
+
     #pragma omp parallel for schedule(dynamic, 64)
     for (npy_intp seq = 0; seq < N; ++seq) {
         const char *enc_seq = enc_base + seq * enc_stride0;
@@ -458,6 +504,8 @@ PyObject *pyprego_batch_extract_energies(PyObject * /*self*/, PyObject *args)
             *(double *)(out_base + seq * out_stride0 + m * out_stride1) = result;
         }
     }
+
+    Py_END_ALLOW_THREADS;
 
     Py_RETURN_NONE;
 }
