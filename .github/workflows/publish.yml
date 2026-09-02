@@ -18,6 +18,13 @@ jobs:
           CIBW_SKIP: "*-win* *-musllinux* *i686*"
           CIBW_ARCHS: x86_64
           CIBW_BUILD_VERBOSITY: 1
+          # manylinux2014 ships GCC 10.2, and NumPy's build now requires >= 10.3.
+          # Since numpy is an unpinned build requirement and recent versions have
+          # no manylinux2014 wheel, pip fell back to compiling it from source and
+          # the build failed before reaching pyprego's own sources. manylinux_2_28
+          # ships GCC 12; it raises the Linux glibc floor from 2.17 to 2.28,
+          # i.e. RHEL 8 / Ubuntu 18.10 and newer.
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
 
       - uses: actions/upload-artifact@v4
         with:

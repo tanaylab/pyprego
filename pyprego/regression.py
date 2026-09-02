@@ -1059,8 +1059,7 @@ class _PWMLRegression:
             if _debug:
                 phase_elapsed = time.perf_counter() - phase_start  # type: ignore[operator]
                 logger.debug(
-                    "Phase %d (resolution=%.4f): %d iterations, %.3fs, "
-                    "R² %.6f -> %.6f (delta=%.6f)",
+                    "Phase %d (resolution=%.4f): %d iterations, %.3fs, R² %.6f -> %.6f (delta=%.6f)",
                     phase_idx,
                     self.resolutions[phase_idx],
                     phase_iters,
@@ -1078,8 +1077,7 @@ class _PWMLRegression:
         if _debug:
             total_elapsed = time.perf_counter() - opt_start  # type: ignore[operator]
             logger.debug(
-                "Optimization complete: %d total iterations across %d phases, "
-                "%.3fs total, final R²=%.6f",
+                "Optimization complete: %d total iterations across %d phases, %.3fs total, final R²=%.6f",
                 total_iterations,
                 len(self.resolutions),
                 total_elapsed,
@@ -1989,6 +1987,7 @@ def _regress_pwm_multi_kmers(
         try:
             try:
                 from threadpoolctl import threadpool_limits  # type: ignore
+
                 tp_ctx = threadpool_limits(limits=1)
             except ImportError:
                 tp_ctx = None
@@ -1997,8 +1996,15 @@ def _regress_pwm_multi_kmers(
                 with ThreadPoolExecutor(max_workers=effective_workers) as pool:
                     futures = {
                         pool.submit(
-                            _eval_kmer_candidate, kmer, seq_train, resp_train,
-                            seq_val, resp_val, core_kwargs, final_metric, alternative,
+                            _eval_kmer_candidate,
+                            kmer,
+                            seq_train,
+                            resp_train,
+                            seq_val,
+                            resp_val,
+                            core_kwargs,
+                            final_metric,
+                            alternative,
                         ): kmer
                         for kmer in cand_kmers
                     }
@@ -2031,8 +2037,14 @@ def _regress_pwm_multi_kmers(
     else:
         for kmer in cand_kmers:
             _, val_score, err = _eval_kmer_candidate(
-                kmer, seq_train, resp_train, seq_val, resp_val,
-                core_kwargs, final_metric, alternative,
+                kmer,
+                seq_train,
+                resp_train,
+                seq_val,
+                resp_val,
+                core_kwargs,
+                final_metric,
+                alternative,
             )
             if err is not None:
                 if verbose:

@@ -364,15 +364,13 @@ def screen_kmers(
     n_resp = response.shape[1]
 
     # ── Fast C extension path (pure and gapped k-mers) ──
-    if (
-        _screen_kmers_c is not None
-        and kmer_len is not None
-        and kmers is None
-        and seed is None
-    ):
+    if _screen_kmers_c is not None and kmer_len is not None and kmers is None and seed is None:
         try:
             encoded = encode_sequences_fast(
-                [s.upper() if isinstance(s, str) else str(s) for s in (sequences.tolist() if isinstance(sequences, np.ndarray) else sequences)]
+                [
+                    s.upper() if isinstance(s, str) else str(s)
+                    for s in (sequences.tolist() if isinstance(sequences, np.ndarray) else sequences)
+                ]
             )
             encoded = np.ascontiguousarray(encoded)
             response_c = np.ascontiguousarray(response)
