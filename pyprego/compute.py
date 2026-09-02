@@ -527,3 +527,312 @@ def compute_local_pwm(
         result[:, :n_windows] = fwd_scores
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Expected local PWM scoring over base frequency matrices
+# ---------------------------------------------------------------------------
+
+# Widest motif block. Wider blocks amortise the BLAS call and keep the fold's
+# innermost axis long enough to vectorise; past ~64 the intermediate stops
+# fitting in cache and nothing more is gained.
+_FREQ_BLOCK_MAX = 64
+
+# Narrowest motif block. Below this the (m, 4) x (4, D*B) product becomes too
+# skinny for BLAS and the fold's innermost axis too short to vectorise; a
+# 61-motif database measured 1.4x slower at 8 than at 16, in both the
+# single-matrix and the batched regime.
+_FREQ_BLOCK_MIN = 16
+
+
+class _serial_blas:
+    """Clamp nested BLAS thread pools to one thread.
+
+    The parallelism layer here is a thread pool over (matrix, motif block)
+    tasks; letting each per-block ``matmul`` spin up its own BLAS pool on top
+    of that oversubscribes the machine and costs roughly 3x. Mirrors R prego's
+    ``local_serial_blas()``. Uses threadpoolctl when importable and falls back
+    to the environment variable, matching the pattern in ``regression.py``.
+    """
+
+    def __init__(self) -> None:
+        self._ctx = None
+        self._prev_omp: str | None = None
+
+    def __enter__(self) -> _serial_blas:
+        import os
+
+        self._prev_omp = os.environ.get("OMP_NUM_THREADS")
+        os.environ["OMP_NUM_THREADS"] = "1"
+        try:
+            from threadpoolctl import threadpool_limits  # type: ignore
+
+            self._ctx = threadpool_limits(limits=1, user_api="blas")
+        except ImportError:
+            self._ctx = None
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        import os
+
+        if self._ctx is not None:
+            self._ctx.unregister()
+            self._ctx = None
+        if self._prev_omp is None:
+            os.environ.pop("OMP_NUM_THREADS", None)
+        else:
+            os.environ["OMP_NUM_THREADS"] = self._prev_omp
+
+
+def freq_local_pwm_block_size(n_motifs: int, n_threads: int) -> int:
+    """Number of motifs per block, given the database size and the thread count.
+
+    Deliberately independent of how many frequency matrices are scored in one
+    call: the block width is the inner dimension of the per-block ``matmul``,
+    so letting the batch size feed into it would make the same matrix score
+    one or two ULP differently depending on what was passed alongside it.
+
+    The block is narrow enough that a *single* frequency matrix already splits
+    into at least ``n_threads`` tasks, so a one-matrix call is not serial.
+
+    Parameters
+    ----------
+    n_motifs : int
+        Number of motifs in the database.
+    n_threads : int
+        Number of worker threads the tasks will be spread over.
+
+    Returns
+    -------
+    int
+        Motifs per block.
+    """
+    per_thread = n_motifs // max(1, n_threads)
+    return int(np.clip(per_thread, _FREQ_BLOCK_MIN, _FREQ_BLOCK_MAX))
+
+
+def freq_local_pwm_plan(
+    mat: np.ndarray,
+    rc_mat: np.ndarray,
+    motif_lengths: np.ndarray,
+    *,
+    multiply: bool = True,
+    bidirect: bool = True,
+    n_threads: int = 1,
+) -> list[dict]:
+    """Precompute the per-block operands for :func:`batch_freq_local_pwm`.
+
+    Motifs are sorted by length before blocking, so each block only pays for
+    its own longest motif rather than for the longest motif in the database.
+    On the 3867-motif database (D=35, mean length 12.7) this cuts about a
+    fifth off the run time, and it is numerically free -- positions past a
+    motif's length contribute exactly zero either way.
+
+    The result depends only on the database, the two mode flags and
+    *n_threads*, so it can be cached and reused across calls.
+
+    Parameters
+    ----------
+    mat : np.ndarray
+        Stacked log-scale PWM matrix, shape ``(D*4, n_motifs)``.
+    rc_mat : np.ndarray
+        Reverse-complement log-scale PWM matrix, same shape as *mat*.
+    motif_lengths : np.ndarray
+        Length of each motif, shape ``(n_motifs,)``.
+    multiply : bool
+        ``True`` for ``combine="multiply"``, ``False`` for ``combine="sum"``.
+    bidirect : bool
+        Whether the reverse-complement operand is needed.
+    n_threads : int
+        Thread count the tasks will be spread over.
+
+    Returns
+    -------
+    list[dict]
+        One entry per motif block.
+    """
+    n_motifs = mat.shape[1]
+    block_size = freq_local_pwm_block_size(n_motifs, n_threads)
+    order = np.argsort(motif_lengths, kind="stable")
+
+    blocks: list[dict] = []
+    for start in range(0, n_motifs, block_size):
+        cols = order[start : start + block_size]
+        n_block = len(cols)
+        lens = motif_lengths[cols]
+        width = int(lens.max())
+
+        operands = []
+        for src in (mat, rc_mat) if bidirect else (mat,):
+            # (4*width, n_block) -> (4, width*n_block), so that the product
+            # reshapes to (positions, width, n_block) with the block index
+            # innermost and contiguous.
+            sub = src[: 4 * width, cols]
+            op = np.ascontiguousarray(sub.reshape(width, 4, n_block).transpose(1, 0, 2).reshape(4, width * n_block))
+            operands.append(np.exp(op) if multiply else op)
+
+        # Offsets past each motif's own length, as one contiguous run per
+        # motif position (the block is length-sorted, so the motifs needing
+        # padding at offset o are exactly the first searchsorted(lens, o) ones).
+        pad = [(o, int(np.searchsorted(lens, o, side="right"))) for o in range(int(lens.min()), width)]
+        blocks.append(
+            {
+                "cols": cols,
+                "n_block": n_block,
+                "width": width,
+                "lens": lens,
+                "operands": operands,
+                "pad": [(o, k) for o, k in pad if k > 0],
+            }
+        )
+    return blocks
+
+
+def _freq_fold(
+    freqs_padded: np.ndarray,
+    block: dict,
+    n_pos: int,
+    multiply: bool,
+    operand: np.ndarray,
+    buf: np.ndarray,
+) -> np.ndarray:
+    """Score one strand of one motif block against one frequency matrix."""
+    width, n_block = block["width"], block["n_block"]
+    n_rows = n_pos + width - 1
+
+    prod = np.matmul(
+        freqs_padded[:n_rows],
+        operand,
+        out=buf[: n_rows * width * n_block].reshape(n_rows, width * n_block),
+    ).reshape(n_rows, width, n_block)
+
+    if multiply:
+        np.log(prod, out=prod)
+    # Offsets past a motif's own length must contribute *exactly* zero, so
+    # that a motif's score never depends on how the block happened to be
+    # formed. Under "sum" the padded log-probabilities are 0 and the product
+    # already is; under "multiply" they are exp(0) = 1, whose product is the
+    # row sum of the frequencies -- 1 only to within rounding. Zeroing both
+    # keeps the guarantee from resting on how BLAS accumulates.
+    for offset, k in block["pad"]:
+        prod[:, offset, :k] = 0.0
+
+    # out[j, b] = sum_l prod[j + l, l, b]: the diagonal band, as a stride trick
+    # rather than a copy. The last element lands exactly on the last element of
+    # `prod`, so the view never reads past the buffer.
+    item = prod.itemsize
+    band = np.lib.stride_tricks.as_strided(
+        prod,
+        shape=(n_pos, width, n_block),
+        strides=(width * n_block * item, (width * n_block + n_block) * item, item),
+    )
+    return band.sum(axis=1)
+
+
+def batch_freq_local_pwm(
+    freq_list: list[np.ndarray],
+    mat: np.ndarray,
+    rc_mat: np.ndarray,
+    motif_lengths: np.ndarray,
+    *,
+    multiply: bool = True,
+    bidirect: bool = True,
+    n_threads: int = 1,
+    plan: list[dict] | None = None,
+) -> list[np.ndarray]:
+    """Expected local PWM scores for a list of base frequency matrices.
+
+    The array-level kernel behind :func:`~pyprego.motif_db.calc_freq_local_pwm`;
+    see that function for the definition of the two combine modes.
+
+    Parameters
+    ----------
+    freq_list : list[np.ndarray]
+        Base frequency matrices, each ``(m, 4)`` in A, C, G, T order with rows
+        summing to 1. Lengths may differ.
+    mat : np.ndarray
+        Stacked log-scale PWM matrix, shape ``(D*4, n_motifs)``.
+    rc_mat : np.ndarray
+        Reverse-complement log-scale PWM matrix, same shape as *mat*.
+    motif_lengths : np.ndarray
+        Length of each motif, shape ``(n_motifs,)``.
+    multiply : bool
+        ``True`` for ``combine="multiply"``, ``False`` for ``combine="sum"``.
+    bidirect : bool
+        Score both strands, combining them per position as
+        ``log(exp(fwd) + exp(rev))``.
+    n_threads : int
+        Worker threads to spread the (matrix, motif block) tasks over.
+    plan : list[dict] | None
+        Precomputed operands from :func:`freq_local_pwm_plan`. Built on the fly
+        when ``None``.
+
+    Returns
+    -------
+    list[np.ndarray]
+        One ``(n_motifs, m)`` float64 array per input matrix, row *i* holding
+        the scores of motif *i* and column *j* the score of a motif *starting*
+        at *j*. The last ``motif_lengths[i] - 1`` entries of row *i* are NaN.
+    """
+    n_motifs = mat.shape[1]
+    max_pos = mat.shape[0] // 4
+    motif_lengths = np.asarray(motif_lengths, dtype=np.int64)
+
+    if plan is None:
+        plan = freq_local_pwm_plan(
+            mat, rc_mat, motif_lengths, multiply=multiply, bidirect=bidirect, n_threads=n_threads
+        )
+
+    # Pad each matrix so that the band never runs off the end. Padded rows are
+    # reached only at offsets past a motif's length (whose contribution is
+    # forced to zero) or at start positions where the motif does not fit
+    # (which are masked to NaN), so the value only has to stay finite -- a
+    # uniform distribution keeps the log in "multiply" mode well defined.
+    padded = [
+        np.ascontiguousarray(np.vstack([q, np.full((max_pos - 1, 4), 0.25, dtype=np.float64)])) for q in freq_list
+    ]
+    outputs = [np.empty((n_motifs, q.shape[0]), dtype=np.float64) for q in freq_list]
+
+    block_max = max(b["width"] * b["n_block"] for b in plan)
+    buf_size = (max(q.shape[0] for q in freq_list) + max_pos - 1) * block_max
+
+    def run(task: tuple[int, int], buf: np.ndarray) -> None:
+        k, bi = task
+        block = plan[bi]
+        n_pos = freq_list[k].shape[0]
+        acc = _freq_fold(padded[k], block, n_pos, multiply, block["operands"][0], buf)
+        if bidirect:
+            acc = np.logaddexp(acc, _freq_fold(padded[k], block, n_pos, multiply, block["operands"][1], buf))
+        acc = acc.T.copy()
+        # Start positions where a motif does not fit are NaN, per motif length.
+        # Vectorised rather than a loop over the block: these tasks are short
+        # enough that per-task Python time shows up in the thread scaling.
+        acc[np.arange(n_pos) > (n_pos - block["lens"])[:, None]] = np.nan
+        outputs[k][block["cols"], :] = acc
+
+    tasks = [(k, bi) for k in range(len(freq_list)) for bi in range(len(plan))]
+    # More workers than tasks only adds pool and threadpoolctl overhead. The
+    # block layout was already fixed from the *requested* thread count, so
+    # capping here cannot change the numbers.
+    n_threads = min(n_threads, len(tasks))
+
+    if n_threads <= 1:
+        buf = np.empty(buf_size, dtype=np.float64)
+        for task in tasks:
+            run(task, buf)
+    else:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        local = threading.local()
+
+        def run_threaded(task: tuple[int, int]) -> None:
+            buf = getattr(local, "buf", None)
+            if buf is None:
+                buf = local.buf = np.empty(buf_size, dtype=np.float64)
+            run(task, buf)
+
+        with _serial_blas(), ThreadPoolExecutor(max_workers=n_threads) as pool:
+            list(pool.map(run_threaded, tasks))
+
+    return outputs

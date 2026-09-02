@@ -355,4 +355,98 @@ tryCatch({
     cat("pssm_diff: FAILED -", conditionMessage(e), "\n")
 })
 
+# ============================================================================
+# (r) calc_freq_local_pwm: expected local PWM scores over base frequencies
+# ============================================================================
+cat("\n=== calc_freq_local_pwm ===\n")
+
+if (!exists("calc_freq_local_pwm")) {
+    cat("calc_freq_local_pwm: SKIPPED - not available in this prego version\n")
+} else {
+    tryCatch({
+        # Two motifs of different lengths, so padding past the shorter motif
+        # and the per-motif NA tail are exercised.
+        m4 <- data.frame(
+            motif = "M4", pos = 1:4,
+            A = c(0.7, 0.1, 0.1, 0.25), C = c(0.1, 0.7, 0.1, 0.25),
+            G = c(0.1, 0.1, 0.7, 0.25), T = c(0.1, 0.1, 0.1, 0.25)
+        )
+        m6 <- data.frame(
+            motif = "M6", pos = 1:6,
+            A = c(0.9, 0.05, 0.4, 0.25, 0.1, 0.6), C = c(0.05, 0.9, 0.2, 0.25, 0.1, 0.2),
+            G = c(0.03, 0.03, 0.2, 0.25, 0.7, 0.1), T = c(0.02, 0.02, 0.2, 0.25, 0.1, 0.1)
+        )
+        small_db <- rbind(m4, m6)
+        small_mdb <- create_motif_db(small_db)
+
+        # A wider database with motifs of many different lengths, to exercise
+        # the length-sorted blocking on a realistic mixture.
+        all_db <- all_motif_datasets()
+        lens <- tapply(all_db$pos, all_db$motif, length)
+        picked <- unlist(lapply(sort(unique(lens)), function(L) names(lens)[lens == L][1]))
+        picked <- picked[seq(1, length(picked), length.out = min(15, length(picked)))]
+        wide_db <- all_db[all_db$motif %in% picked, c("motif", "pos", "A", "C", "G", "T")]
+        wide_mdb <- create_motif_db(wide_db)
+
+        set.seed(60427)
+        n_pos <- 64
+        q_rand <- matrix(stats::runif(n_pos * 4, 0.05, 1), nrow = n_pos, ncol = 4)
+        q_rand <- q_rand / rowSums(q_rand)
+
+        seq_onehot <- "ACGTACGTTGCAAGGTCCATACGTACGTTGCAAGGTCCAT"
+        q_onehot <- diag(4)[match(strsplit(seq_onehot, "")[[1]], c("A", "C", "G", "T")), ]
+        q_flat <- matrix(0.25, nrow = 40, ncol = 4)
+
+        score_all <- function(q, mdb) {
+            out <- list()
+            for (combine in c("multiply", "sum")) {
+                for (bidirect in c(TRUE, FALSE)) {
+                    key <- paste0(combine, "_", if (bidirect) "bidirect" else "forward")
+                    out[[key]] <- as.data.frame(calc_freq_local_pwm(
+                        q, mdb, combine = combine, bidirect = bidirect
+                    ))
+                }
+            }
+            out
+        }
+
+        # compute_local_pwm on the same one-hot sequence, for the anchor that
+        # a certain ensemble scores exactly like the sequence it encodes.
+        small_tidy <- motif_db_to_dataframe(small_mdb)
+        local_ref <- list()
+        for (bidirect in c(TRUE, FALSE)) {
+            key <- if (bidirect) "bidirect" else "forward"
+            local_ref[[key]] <- as.data.frame(t(sapply(
+                colnames(small_mdb@mat),
+                function(mo) as.numeric(compute_local_pwm(
+                    seq_onehot, small_tidy[small_tidy$motif == mo, c("A", "C", "G", "T")],
+                    bidirect = bidirect, prior = small_mdb@prior
+                ))
+            )))
+        }
+
+        write_json_file(list(
+            prior = small_mdb@prior,
+            small_db = as.data.frame(small_db),
+            small_motifs = colnames(small_mdb@mat),
+            small_lengths = as.integer(small_mdb@motif_lengths),
+            wide_db = as.data.frame(wide_db),
+            wide_motifs = colnames(wide_mdb@mat),
+            wide_lengths = as.integer(wide_mdb@motif_lengths),
+            q_random = as.data.frame(q_rand),
+            q_onehot = as.data.frame(q_onehot),
+            q_flat_positions = nrow(q_flat),
+            onehot_sequence = seq_onehot,
+            small_random = score_all(q_rand, small_mdb),
+            small_onehot = score_all(q_onehot, small_mdb),
+            small_flat = score_all(q_flat, small_mdb),
+            wide_random = score_all(q_rand, wide_mdb),
+            compute_local_pwm_onehot = local_ref
+        ), "calc_freq_local_pwm.json")
+        cat("calc_freq_local_pwm: SUCCESS -", length(picked), "wide motifs\n")
+    }, error = function(e) {
+        cat("calc_freq_local_pwm: FAILED -", conditionMessage(e), "\n")
+    })
+}
+
 cat("\n=== Done ===\n")

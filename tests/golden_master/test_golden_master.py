@@ -421,3 +421,81 @@ class TestScreenKmers:
 
         # Correlations should be very close for shared kmers
         np.testing.assert_allclose(py_vals, r_vals, rtol=0.05, atol=0.01)
+
+
+# ---------------------------------------------------------------------------
+# (r) calc_freq_local_pwm
+# ---------------------------------------------------------------------------
+
+
+def _rows_to_matrix(rows: list[dict]) -> np.ndarray:
+    """Convert R's row-oriented data.frame JSON to a 2-D float array.
+
+    R writes NA as JSON null; the column order is the ``V1..Vn`` order the
+    data.frame was created with, and ``_row`` carries the row names.
+    """
+    cols = [k for k in rows[0] if k != "_row"]
+    return np.array([[np.nan if r[c] is None else float(r[c]) for c in cols] for r in rows], dtype=np.float64)
+
+
+def _rows_to_motif_df(rows: list[dict]) -> pd.DataFrame:
+    """Convert a tidy motif data.frame JSON to a DataFrame."""
+    return pd.DataFrame(rows)[["motif", "pos", "A", "C", "G", "T"]]
+
+
+class TestCalcFreqLocalPWM:
+    """calc_freq_local_pwm against R prego reference output."""
+
+    MODES = [
+        ("multiply", True, "multiply_bidirect"),
+        ("multiply", False, "multiply_forward"),
+        ("sum", True, "sum_bidirect"),
+        ("sum", False, "sum_forward"),
+    ]
+
+    @pytest.mark.parametrize("db_key,q_key,out_key", [
+        ("small_db", "q_random", "small_random"),
+        ("small_db", "q_onehot", "small_onehot"),
+        ("wide_db", "q_random", "wide_random"),
+    ])
+    def test_matches_r(self, golden_freq_local_pwm: dict, db_key: str, q_key: str, out_key: str) -> None:
+        gm = golden_freq_local_pwm
+        mdb = pyprego.create_motif_db(_rows_to_motif_df(gm[db_key]), prior=gm["prior"])
+        q = _rows_to_matrix(gm[q_key])
+
+        for combine, bidirect, key in self.MODES:
+            expected = _rows_to_matrix(gm[out_key][key])
+            result = pyprego.calc_freq_local_pwm(q, mdb, combine=combine, bidirect=bidirect)
+
+            assert result.shape == expected.shape
+            # The NaN tail must land on exactly the same entries.
+            np.testing.assert_array_equal(np.isnan(result), np.isnan(expected))
+            np.testing.assert_allclose(result, expected, rtol=1e-10, atol=1e-10, equal_nan=True)
+
+    def test_flat_matches_r(self, golden_freq_local_pwm: dict) -> None:
+        gm = golden_freq_local_pwm
+        mdb = pyprego.create_motif_db(_rows_to_motif_df(gm["small_db"]), prior=gm["prior"])
+        q = np.full((gm["q_flat_positions"], 4), 0.25)
+
+        for combine, bidirect, key in self.MODES:
+            expected = _rows_to_matrix(gm["small_flat"][key])
+            result = pyprego.calc_freq_local_pwm(q, mdb, combine=combine, bidirect=bidirect)
+            np.testing.assert_allclose(result, expected, rtol=1e-10, atol=1e-10, equal_nan=True)
+
+    def test_onehot_matches_compute_local_pwm(self, golden_freq_local_pwm: dict) -> None:
+        """A certain ensemble scores exactly like the sequence it encodes.
+
+        R's compute_local_pwm uses float internally, hence the looser tolerance.
+        """
+        gm = golden_freq_local_pwm
+        mdb = pyprego.create_motif_db(_rows_to_motif_df(gm["small_db"]), prior=gm["prior"])
+        q = _rows_to_matrix(gm["q_onehot"])
+        lengths = np.array(gm["small_lengths"])
+
+        for bidirect, key in ((True, "bidirect"), (False, "forward")):
+            expected = _rows_to_matrix(gm["compute_local_pwm_onehot"][key])
+            for combine in ("multiply", "sum"):
+                result = pyprego.calc_freq_local_pwm(q, mdb, combine=combine, bidirect=bidirect)
+                for i, length in enumerate(lengths):
+                    valid = slice(0, q.shape[0] - int(length) + 1)
+                    np.testing.assert_allclose(result[i, valid], expected[i, valid], rtol=0, atol=1e-5)

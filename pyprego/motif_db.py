@@ -10,9 +10,10 @@ efficient batch scoring across many motifs.
 
 from __future__ import annotations
 
+import os
 import re
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,8 +24,8 @@ from scipy import stats as scipy_stats
 from .compute import (
     _compute_log_pssm,
     _encode_sequences,
-    _prepare_pssm,
     batch_extract_energies,
+    batch_freq_local_pwm,
     compute_pwm,
 )
 from .types import NUCLEOTIDES
@@ -649,6 +650,167 @@ def extract_pwm(
         results[name] = scores
 
     return pd.DataFrame(results)
+
+
+# ---------------------------------------------------------------------------
+# calc_freq_local_pwm
+# ---------------------------------------------------------------------------
+
+
+def _as_freq_matrix(freqs: np.ndarray) -> np.ndarray:
+    """Coerce one base frequency matrix to ``(m, 4)`` and validate it."""
+    q = np.asarray(freqs)
+    if not np.issubdtype(q.dtype, np.number):
+        raise ValueError("freqs must be numeric")
+    if q.ndim != 2:
+        raise ValueError(f"Each frequency matrix must be 2-D, got {q.ndim} dimensions")
+
+    if q.shape[1] != 4:
+        if q.shape[0] != 4:
+            raise ValueError(f"Each frequency matrix must have 4 rows or 4 columns (A, C, G, T), got {q.shape}")
+        q = q.T
+
+    q = np.ascontiguousarray(q, dtype=np.float64)
+    sums = q.sum(axis=1)
+    bad = int(np.sum(~np.isclose(sums, 1.0, rtol=0, atol=1e-6)))
+    if bad:
+        raise ValueError(f"Every position of freqs must sum to 1; {bad} position(s) do not")
+    return q
+
+
+def _as_freq_list(freqs: np.ndarray | Sequence[np.ndarray]) -> tuple[list[np.ndarray], bool]:
+    """Bring every accepted input form to a list of ``(m, 4)`` matrices.
+
+    Returns the list and whether the input was a single matrix (in which case
+    the caller should unwrap the result).
+    """
+    if isinstance(freqs, np.ndarray) and freqs.ndim == 3:
+        if freqs.shape[1] != 4 and freqs.shape[2] != 4:
+            raise ValueError(f"A 3-D freqs must be (n, m, 4) or (n, 4, m), got {freqs.shape}")
+        return [_as_freq_matrix(freqs[k]) for k in range(freqs.shape[0])], False
+
+    if isinstance(freqs, np.ndarray) and freqs.ndim == 2:
+        return [_as_freq_matrix(freqs)], True
+
+    if isinstance(freqs, (list, tuple)):
+        if len(freqs) == 0:
+            raise ValueError("freqs is empty")
+        return [_as_freq_matrix(q) for q in freqs], False
+
+    raise ValueError("freqs must be a 2-D matrix, a 3-D array, or a sequence of 2-D matrices")
+
+
+def calc_freq_local_pwm(
+    freqs: np.ndarray | Sequence[np.ndarray],
+    motifs: MotifDB | pd.DataFrame,
+    *,
+    combine: str = "multiply",
+    bidirect: bool = True,
+    n_threads: int | None = None,
+) -> np.ndarray | list[np.ndarray]:
+    r"""Expected local PWM scores over a per-position base frequency matrix.
+
+    Score every motif in a database against a base frequency matrix at every
+    start position. Where :func:`~pyprego.compute.compute_local_pwm` scores one
+    concrete sequence, this scores an ensemble of sequences summarised by its
+    per-position nucleotide distribution.
+
+    For a motif of length :math:`L` placed at start :math:`j`, with motif
+    column :math:`p_l` and frequency column :math:`q_{j+l}`, there are two ways
+    to combine each pair of distributions, differing only in where the log sits:
+
+    ``combine="multiply"``
+        :math:`\sum_l \log(q_{j+l} \cdot p_l)`, the log of the expected
+        likelihood. On a flat ensemble every motif gets the same floor,
+        :math:`L \log(0.25)`, so scores are comparable across motifs. Exact
+        only if the positions of the ensemble are independent.
+
+    ``combine="sum"``
+        :math:`\sum_l q_{j+l} \cdot \log p_l`, the expected log-likelihood --
+        the mean score of drawing sequences from the ensemble and running
+        ``compute_local_pwm`` on each. Being linear in the frequencies it is
+        exact whatever the joint distribution of positions is, but a flat
+        ensemble gives each motif a different floor, so scores are not
+        comparable across motifs without normalisation.
+
+    Both reduce to ``compute_local_pwm`` when the frequency matrix is one-hot.
+
+    Parameters
+    ----------
+    freqs : np.ndarray | Sequence[np.ndarray]
+        Base frequencies in A, C, G, T order, as either a single ``(m, 4)`` or
+        ``(4, m)`` matrix, a sequence of such matrices (which may differ in
+        length), or a 3-D ``(n, m, 4)`` / ``(n, 4, m)`` array. Every position
+        must sum to 1.
+    motifs : MotifDB | pd.DataFrame
+        A :class:`MotifDB`, or a tidy motif DataFrame with columns ``motif``,
+        ``A``, ``C``, ``G``, ``T``.
+    combine : str
+        ``"multiply"`` (the default) or ``"sum"``. See above.
+    bidirect : bool
+        Score both strands, combining them at each position as
+        ``log(exp(fwd) + exp(rev))`` -- the same convention as
+        ``compute_local_pwm``. ``False`` scores the forward strand only.
+    n_threads : int | None
+        Worker threads. ``None`` uses ``min(os.cpu_count(), 32)``; the kernel
+        is memory-bandwidth bound and stops gaining past roughly 32 threads.
+
+    Returns
+    -------
+    np.ndarray | list[np.ndarray]
+        A ``(n_motifs, m)`` float64 array, row *i* holding the scores of
+        ``motifs.names()[i]`` and column *j* the score of a motif *starting* at
+        *j*. The last ``L - 1`` entries of each row are NaN, where ``L`` is
+        that motif's length. A list of such arrays if *freqs* held more than
+        one matrix.
+
+    See Also
+    --------
+    pyprego.compute_local_pwm : the same score for one concrete sequence.
+    pyprego.extract_pwm : whole-sequence energies for a motif database.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pyprego
+    >>> db = pyprego.all_motif_datasets()
+    >>> mdb = pyprego.create_motif_db(db[db["motif"].isin(db["motif"].unique()[:20])])
+    >>> flat = np.full((24, 4), 0.25)
+    >>> scores = pyprego.calc_freq_local_pwm(flat, mdb, bidirect=False)
+    >>> scores.shape
+    (20, 24)
+    """
+    if combine not in ("multiply", "sum"):
+        raise ValueError(f"combine must be 'multiply' or 'sum', got {combine!r}")
+
+    if isinstance(motifs, pd.DataFrame):
+        motifs = create_motif_db(motifs)
+    elif not isinstance(motifs, MotifDB):
+        raise ValueError("motifs must be a MotifDB object or a tidy motif DataFrame")
+
+    freq_list, single = _as_freq_list(freqs)
+    lengths = np.array(list(motifs.motif_lengths.values()), dtype=np.int64)
+    max_len = int(lengths.max())
+    for k, q in enumerate(freq_list):
+        if q.shape[0] < max_len:
+            raise ValueError(
+                f"Frequency matrix {k} has {q.shape[0]} positions, shorter than the longest motif ({max_len})"
+            )
+
+    if n_threads is None:
+        n_threads = min(os.cpu_count() or 1, 32)
+    n_threads = max(1, int(n_threads))
+
+    results = batch_freq_local_pwm(
+        freq_list,
+        motifs.mat,
+        motifs.rc_mat,
+        lengths,
+        multiply=combine == "multiply",
+        bidirect=bidirect,
+        n_threads=n_threads,
+    )
+    return results[0] if single else results
 
 
 # ---------------------------------------------------------------------------

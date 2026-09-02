@@ -125,3 +125,9 @@ def golden_pssm_rc() -> dict:
 def golden_pssm_diff() -> dict:
     """Load pssm_diff golden master data."""
     return _load_json("pssm_diff.json")
+
+
+@pytest.fixture(scope="session")
+def golden_freq_local_pwm() -> dict:
+    """Load calc_freq_local_pwm golden master data."""
+    return _load_json("calc_freq_local_pwm.json")

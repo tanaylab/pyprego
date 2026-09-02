@@ -4,6 +4,39 @@ All notable changes to pyprego will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.4] - 2026-09-02
+
+### Added
+
+- `calc_freq_local_pwm`: score every motif in a database against a per-position
+  base frequency matrix at every start position, returning a motifs x positions
+  array. Where `compute_local_pwm` scores one concrete sequence, this scores an
+  ensemble summarised by its per-position nucleotide distribution. Two modes:
+  `combine="multiply"` (log of the expected likelihood, giving every motif the
+  same score on a flat ensemble, so rows are comparable) and `combine="sum"`
+  (expected log-likelihood, exact for any joint distribution over positions).
+  Both reduce to `compute_local_pwm` when the frequency matrix is one-hot. Port
+  of the R prego function of the same name, verified against it to 7.1e-14 on
+  both bundled databases, in both modes and both strand settings.
+- `n_workers` parameter for `regress_pwm(multi_kmers=True)`, parallelising
+  candidate-k-mer evaluation over a thread pool. Defaults to 1, so existing
+  calls are unchanged.
+
+### Changed
+
+- `pymisha` and `logomaker` are now core dependencies rather than optional
+  extras.
+
+### Removed
+
+- The `genomic`, `viz` and `all` extras. Their contents are now installed by
+  default, so `pip install pyprego` covers what `pyprego[all]` used to.
+
+### Dependencies
+
+- `threadpoolctl>=3.0` added, used to keep BLAS single-threaded inside worker
+  threads. Falls back to the `OMP_NUM_THREADS` environment variable when absent.
+
 ## [0.0.2] - 2026-04-03
 
 ### Fixed

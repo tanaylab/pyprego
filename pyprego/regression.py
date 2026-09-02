@@ -12,8 +12,10 @@ closely mirrors the R behaviour and can run on any machine.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -1601,6 +1603,7 @@ def regress_pwm(
     motif_db: dict[str, pd.DataFrame] | pd.DataFrame | None = None,
     alternative: str = "less",
     kmer_sequence_length: int | None = None,
+    n_workers: int = 1,
 ) -> RegressionResult:
     """Perform PWM regression to discover a motif in DNA sequences.
 
@@ -1755,6 +1758,7 @@ def regress_pwm(
             core_kwargs=core_kwargs,
             seed=seed,
             verbose=verbose,
+            n_workers=n_workers,
         )
     else:
         # Single k-mer screen
@@ -1859,6 +1863,39 @@ def _regress_pwm_with_kmer_screen(
     return regress_pwm_core(sequences, response, motif=best_kmer, **core_kwargs)
 
 
+def _eval_kmer_candidate(
+    kmer: str,
+    seq_train: list[str],
+    resp_train: np.ndarray,
+    seq_val: list[str],
+    resp_val: np.ndarray,
+    core_kwargs: dict,
+    final_metric: str,
+    alternative: str,
+) -> tuple[str, float, str | None]:
+    """Evaluate one k-mer candidate: fit on train, score on val.
+
+    Returns ``(kmer, val_score, error_or_None)``. The fitted
+    ``RegressionResult`` is discarded because the parent re-runs
+    ``regress_pwm_core`` on the full dataset with the winning k-mer, and
+    because the result's ``predict`` closure cannot cross process boundaries.
+    Designed to run inside a worker process so exceptions are returned
+    rather than raised.
+    """
+    try:
+        res = regress_pwm_core(
+            seq_train,
+            resp_train,
+            motif=kmer,
+            **core_kwargs,
+        )
+        val_pred = res.predict(seq_val)
+        val_score = _score_predictions(resp_val, val_pred, final_metric, alternative)
+        return (kmer, float(val_score), None)
+    except Exception as exc:
+        return (kmer, float("-inf"), str(exc))
+
+
 def _regress_pwm_multi_kmers(
     sequences: list[str],
     response: np.ndarray,
@@ -1877,6 +1914,7 @@ def _regress_pwm_multi_kmers(
     core_kwargs: dict,
     seed: int | None,
     verbose: bool,
+    n_workers: int = 1,
 ) -> RegressionResult:
     """Try multiple k-mer seeds and pick the best."""
     rng = np.random.default_rng(seed)
@@ -1922,24 +1960,89 @@ def _regress_pwm_multi_kmers(
     best_val_score = -np.inf
     best_kmer = cand_kmers[0]
 
-    for kmer in cand_kmers:
+    effective_workers = max(1, min(n_workers, len(cand_kmers)))
+    if effective_workers > 1:
+        # Parallel dispatch over candidate kmers. Mirrors R's
+        # `safe_llply(..., .parallel=TRUE)` in regression-multi.kmers.R.
+        #
+        # Use threads, not processes:
+        # - pyprego's hot C++ kernels (init_energies, choose_best_move)
+        #   release the GIL via Py_BEGIN_ALLOW_THREADS, so Python threads
+        #   get real parallelism inside them.
+        # - Avoids multiprocessing state (forkserver daemons, spawn resource
+        #   trackers) that would otherwise be inherited by a caller's own
+        #   fork-based pool (e.g. pycqream.distill's 60-worker fork pool)
+        #   and deadlock it.
+        #
+        # Thread-pool safety with downstream fork():
+        # numpy/scipy BLAS calls inside our worker threads spawn MKL /
+        # OpenBLAS internal thread pools in the *main* process. Those BLAS
+        # threads stay alive after our ThreadPoolExecutor exits and can
+        # break a downstream `os.fork()` (classic fork-after-threads: the
+        # forked child inherits thread-pool bookkeeping but no actual
+        # worker threads -> deadlock on the next BLAS call). Clamping the
+        # BLAS pools to 1 thread for the duration of our parallel section
+        # prevents them from spinning up a multi-thread pool in the first
+        # place. Use threadpoolctl when available; fall back to env vars.
+        prev_omp = os.environ.get("OMP_NUM_THREADS")
+        os.environ["OMP_NUM_THREADS"] = "1"
         try:
-            res = regress_pwm_core(
-                seq_train,
-                resp_train,
-                motif=kmer,
-                **core_kwargs,
-            )
-            val_pred = res.predict(seq_val)
-            val_score = _score_predictions(resp_val, val_pred, final_metric, alternative)
+            try:
+                from threadpoolctl import threadpool_limits  # type: ignore
+                tp_ctx = threadpool_limits(limits=1)
+            except ImportError:
+                tp_ctx = None
+            try:
+                results: dict[str, tuple[float, str | None]] = {}
+                with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+                    futures = {
+                        pool.submit(
+                            _eval_kmer_candidate, kmer, seq_train, resp_train,
+                            seq_val, resp_val, core_kwargs, final_metric, alternative,
+                        ): kmer
+                        for kmer in cand_kmers
+                    }
+                    for fut in as_completed(futures):
+                        kmer, val_score, err = fut.result()
+                        results[kmer] = (val_score, err)
+            finally:
+                if tp_ctx is not None:
+                    tp_ctx.unregister()
+        finally:
+            if prev_omp is None:
+                os.environ.pop("OMP_NUM_THREADS", None)
+            else:
+                os.environ["OMP_NUM_THREADS"] = prev_omp
+
+        # Iterate in candidate order so ties break the same way as serial.
+        for kmer in cand_kmers:
+            if kmer not in results:
+                continue
+            val_score, err = results[kmer]
+            if err is not None:
+                if verbose:
+                    print(f"  {kmer}: FAILED ({err})")
+                continue
             if verbose:
                 print(f"  {kmer}: val_score={val_score:.4f}")
             if val_score > best_val_score:
                 best_val_score = val_score
                 best_kmer = kmer
-        except Exception:
+    else:
+        for kmer in cand_kmers:
+            _, val_score, err = _eval_kmer_candidate(
+                kmer, seq_train, resp_train, seq_val, resp_val,
+                core_kwargs, final_metric, alternative,
+            )
+            if err is not None:
+                if verbose:
+                    print(f"  {kmer}: FAILED ({err})")
+                continue
             if verbose:
-                print(f"  {kmer}: FAILED")
+                print(f"  {kmer}: val_score={val_score:.4f}")
+            if val_score > best_val_score:
+                best_val_score = val_score
+                best_kmer = kmer
 
     if verbose:
         print(f"Best k-mer: {best_kmer} (val_score={best_val_score:.4f})")

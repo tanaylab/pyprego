@@ -10,6 +10,7 @@ Motif database management, querying, and enrichment analysis. Supports bundled J
         - motif_db_to_dataframe
         - set_prior
         - extract_pwm
+        - calc_freq_local_pwm
         - screen_pwm
         - all_motif_datasets
         - get_motif_pssm

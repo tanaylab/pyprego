@@ -313,6 +313,35 @@ class TestMultiKmers:
         assert result.ks is not None
         assert result.ks > 0.0
 
+    def test_multi_kmer_parallel_matches_serial(self):
+        """With n_workers>1, candidate kmers are evaluated concurrently;
+        result must be identical to the serial path (same PSSM, same score)."""
+        motif = "GATAAG"
+        sequences, response = _generate_sequences_with_motif(
+            200, 280, motif, fraction_with_motif=0.5, seed=42
+        )
+        kwargs = dict(
+            motif=None,
+            motif_length=12,
+            score_metric="ks",
+            seed=42,
+            multi_kmers=True,
+            kmer_length=[6],
+            max_cands=4,
+            min_kmer_cor=0.05,
+            val_frac=0.2,
+            **_CORE_KWARGS,
+        )
+        serial = regress_pwm(sequences, response, n_workers=1, **kwargs)
+        parallel = regress_pwm(sequences, response, n_workers=3, **kwargs)
+
+        # Same seed kmer picked and optimizer converges to the same PSSM
+        assert serial.seed_motif == parallel.seed_motif
+        np.testing.assert_array_equal(
+            serial.pssm[["A", "C", "G", "T"]].to_numpy(),
+            parallel.pssm[["A", "C", "G", "T"]].to_numpy(),
+        )
+
     def test_multi_kmer_ignores_when_motif_provided(self):
         """When motif is provided, multi_kmers should be ignored."""
         motif = "GATA"

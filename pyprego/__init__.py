@@ -44,6 +44,7 @@ from .kmers import (
 from .motif_db import (
     MotifDB,
     all_motif_datasets,
+    calc_freq_local_pwm,
     create_motif_db,
     extract_pwm,
     get_motif_pssm,
@@ -173,6 +174,7 @@ __all__ = [
     # Motif DB
     "MotifDB",
     "all_motif_datasets",
+    "calc_freq_local_pwm",
     "create_motif_db",
     "extract_pwm",
     "get_motif_pssm",
