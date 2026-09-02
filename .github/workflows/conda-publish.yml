@@ -39,10 +39,15 @@ jobs:
           channels: conda-forge
           channel-priority: strict
           python-version: ${{ matrix.python }}
-          activate-environment: build
+          activate-environment: base
+          auto-activate: true
 
+      # Into base, and with base activated: conda-build extends the conda CLI of
+      # the environment it is installed into, so installing it in a non-base env
+      # left `conda build` an invalid subcommand. conda build makes its own build
+      # env from --python/--numpy, so base's interpreter is not the one used.
       - name: Install conda-build and anaconda-client
-        run: conda install -y conda-build anaconda-client
+        run: conda install -n base -y conda-build anaconda-client
 
       - name: Extract version
         id: version
